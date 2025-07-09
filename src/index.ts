@@ -1,389 +1,282 @@
+
 import { Elysia } from 'elysia';
 import { cors } from '@elysiajs/cors';
-import { swagger } from '@elysiajs/swagger';
-import { Database } from './database';
-import { validateLocationData, validateRideOption } from './validation';
-import type { LocationData, RideOption, RideBooking } from './types';
+import { kv } from '@vercel/kv';
+import { v4 as uuidv4 } from 'uuid';
 
-// Response types
-interface ApiResponse<T = any> {
-    success?: boolean;
-    error?: string;
-    booking?: T;
-    bookings?: T;
-    timestamp?: string;
-    status?: string;
-    services?: Record<string, string>;
+// Types
+export interface User {
+    id: string;
+    email: string;
+    username: string;
+    walletAddress?: string;
+    createdAt: string;
+    updatedAt: string;
 }
 
-interface CreateBookingRequest {
-    userId: string;
-    origin: LocationData;
-    destination: LocationData;
-    selectedRide: RideOption;
-    customPrice?: string;
-}
-
-interface UpdateBookingRequest {
-    status?: 'pending' | 'confirmed' | 'completed' | 'cancelled';
-    customPrice?: string;
-}
-
-interface LocationAnalyticsRequest {
-    userId: string;
-    locationType: 'origin' | 'destination';
-    locationData: LocationData;
-}
-
-interface SearchAnalyticsRequest {
-    userId: string;
-    query: string;
-    resultsCount: number;
+// Helper function to create username from email
+function createUsernameFromEmail(email: string): string {
+    const username = email.split('@')[0];
+    // Clean up username (remove special chars except dots and underscores)
+    // @ts-ignore
+    return username.replace(/[^a-zA-Z0-9._]/g, '').toLowerCase();
 }
 
 const app = new Elysia()
-    .use(cors({
-        origin: true, // Configure this for production
-        methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-        allowedHeaders: ['Content-Type', 'Authorization']
-    }))
-    .use(swagger({
-        documentation: {
-            info: {
-                title: 'Ride Booking API',
-                version: '1.0.0',
-                description: 'Backend API for ride booking app with blockchain integration'
-            },
-            tags: [
-                { name: 'Health', description: 'Health check endpoints' },
-                { name: 'Rides', description: 'Ride booking operations' },
-                { name: 'Analytics', description: 'Analytics and tracking' }
-            ]
-        }
+    .use(cors())
+    .get('/health', () => ({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
     }))
 
-    // Enhanced Health check with KV testing
-    .get('/health', async ({ set }): Promise<ApiResponse> => {
+    // Check if user exists
+    .post('/api/users/check', async ({ body }: { body: { email: string } }) => {
         try {
-            // Test KV connection
-            const kvHealthy = await Database.testConnection();
+            const { email } = body;
 
-            const health: ApiResponse = {
-                status: kvHealthy ? 'ok' : 'degraded',
-                timestamp: new Date().toISOString(),
-                services: {
-                    kv: kvHealthy ? 'healthy' : 'unhealthy',
-                    server: 'healthy'
-                }
-            };
-
-            if (!kvHealthy) {
-                set.status = 503; // Service Unavailable
+            if (!email) {
+                return {
+                    error: 'Email is required',
+                    status: 400,
+                };
             }
 
-            return health;
-        } catch (error) {
-            console.error('Health check failed:', error);
-            set.status = 500;
+            // Check if user exists
+            const existingUser = await kv.get<User>(`user:${email}`);
+
+            if (existingUser) {
+                return {
+                    exists: true,
+                    user: existingUser
+                };
+            }
+
             return {
-                status: 'error',
-                timestamp: new Date().toISOString(),
-                error: 'Health check failed',
-                services: {
-                    kv: 'unknown',
-                    server: 'error'
-                }
+                exists: false
+            };
+
+        } catch (error) {
+            console.error('Error checking user:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
             };
         }
-    }, {
-        detail: {
-            tags: ['Health'],
-            summary: 'Health check with service status',
-            responses: {
-                200: { description: 'All services healthy' },
-                503: { description: 'Some services degraded' },
-                500: { description: 'Health check failed' }
-            }
-        }
     })
 
-    // Ride Booking Endpoints
-    .post('/api/rides/book', async ({ body, set }): Promise<ApiResponse<RideBooking>> => {
+    // Create new user
+    .post('/api/users/create', async ({ body }: { body: { email: string; walletAddress?: string } }) => {
         try {
-            const requestBody = body as CreateBookingRequest;
-            const { userId, origin, destination, selectedRide, customPrice } = requestBody;
+            const { email, walletAddress } = body;
 
-            // Enhanced validation
-            if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
-                set.status = 400;
-                return { error: 'Valid non-empty userId is required' };
+            if (!email) {
+                return {
+                    error: 'Email is required',
+                    status: 400,
+                };
             }
 
-            if (!validateLocationData(origin)) {
-                set.status = 400;
-                return { error: 'Valid origin location with coordinates and address is required' };
+            // Check if user already exists
+            const existingUser = await kv.get<User>(`user:${email}`);
+            if (existingUser) {
+                return {
+                    error: 'User already exists',
+                    status: 400,
+                };
             }
 
-            if (!validateLocationData(destination)) {
-                set.status = 400;
-                return { error: 'Valid destination location with coordinates and address is required' };
-            }
+            // Create new user
+            const userId = uuidv4();
+            const username = createUsernameFromEmail(email);
+            const now = new Date().toISOString();
 
-            if (!validateRideOption(selectedRide)) {
-                set.status = 400;
-                return { error: 'Valid ride option with all required fields is required' };
-            }
+            const newUser: User = {
+                id: userId,
+                email,
+                username,
+                walletAddress,
+                createdAt: now,
+                updatedAt: now,
+            };
 
-            // Check if origin and destination are different
-            if (origin.address === destination.address) {
-                set.status = 400;
-                return { error: 'Origin and destination cannot be the same' };
-            }
+            // Store user in KV
+            await kv.set(`user:${email}`, newUser);
 
-            const booking = await Database.createRideBooking({
-                userId,
-                origin,
-                destination,
-                selectedRide,
-                customPrice,
-                status: 'pending'
-            });
+            // Also store by ID for quick lookups
+            await kv.set(`user:id:${userId}`, newUser);
 
-            // Track analytics in parallel (don't block response)
-            Database.trackRideSelection(userId, selectedRide.id, customPrice)
-                .catch(error => console.error('Analytics tracking failed:', error));
+            return {
+                success: true,
+                user: newUser
+            };
 
-            return { success: true, booking };
         } catch (error) {
-            console.error('Error creating ride booking:', error);
-            set.status = 500;
-            return { error: 'Failed to create booking. Please try again.' };
-        }
-    }, {
-        detail: {
-            tags: ['Rides'],
-            summary: 'Create a new ride booking',
-            description: 'Creates a new ride booking with the provided details'
+            console.error('Error creating user:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
         }
     })
 
-    .get('/api/rides/:bookingId', async ({ params, set }): Promise<ApiResponse<RideBooking>> => {
+    // Update user
+    .put('/api/users/update', async ({ body }: { body: { email: string; walletAddress?: string; username?: string } }) => {
         try {
-            const { bookingId } = params;
+            const { email, walletAddress, username } = body;
 
-            if (!bookingId || typeof bookingId !== 'string') {
-                set.status = 400;
-                return { error: 'Valid booking ID is required' };
+            if (!email) {
+                return {
+                    error: 'Email is required',
+                    status: 400,
+                };
             }
 
-            const booking = await Database.getRideBooking(bookingId);
-            if (!booking) {
-                set.status = 404;
-                return { error: 'Booking not found' };
+            // Get existing user
+            const existingUser = await kv.get<User>(`user:${email}`);
+            if (!existingUser) {
+                return {
+                    error: 'User not found',
+                    status: 404,
+                };
             }
-            return { booking };
+
+            // Update user
+            const updatedUser: User = {
+                ...existingUser,
+                ...(walletAddress && { walletAddress }),
+                ...(username && { username }),
+                updatedAt: new Date().toISOString(),
+            };
+
+            // Update in KV
+            await kv.set(`user:${email}`, updatedUser);
+            await kv.set(`user:id:${existingUser.id}`, updatedUser);
+
+            return {
+                success: true,
+                user: updatedUser
+            };
+
         } catch (error) {
-            console.error('Error fetching booking:', error);
-            set.status = 500;
-            return { error: 'Failed to fetch booking' };
-        }
-    }, {
-        detail: {
-            tags: ['Rides'],
-            summary: 'Get ride booking by ID',
-            description: 'Retrieves a specific ride booking by its ID'
+            console.error('Error updating user:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
         }
     })
 
-    .patch('/api/rides/:bookingId', async ({ params, body, set }): Promise<ApiResponse<RideBooking>> => {
+    // Get user by ID
+    .get('/api/users/:id', async ({ params }: { params: { id: string } }) => {
         try {
-            const { bookingId } = params;
-            const updates = body as UpdateBookingRequest;
+            const { id } = params;
 
-            if (!bookingId || typeof bookingId !== 'string') {
-                set.status = 400;
-                return { error: 'Valid booking ID is required' };
+            const user = await kv.get<User>(`user:id:${id}`);
+
+            if (!user) {
+                return {
+                    error: 'User not found',
+                    status: 404,
+                };
             }
 
-            // Validate status if provided
-            if (updates.status && !['pending', 'confirmed', 'completed', 'cancelled'].includes(updates.status)) {
-                set.status = 400;
-                return { error: 'Invalid status. Must be: pending, confirmed, completed, or cancelled' };
-            }
+            return { user };
 
-            // Type-safe updates object
-            const safeUpdates: Partial<RideBooking> = {};
-            if (updates.status) {
-                safeUpdates.status = updates.status;
-            }
-            if (updates.customPrice !== undefined) {
-                safeUpdates.customPrice = updates.customPrice;
-            }
-
-            const booking = await Database.updateRideBooking(bookingId, safeUpdates);
-
-            if (!booking) {
-                set.status = 404;
-                return { error: 'Booking not found' };
-            }
-
-            return { success: true, booking };
         } catch (error) {
-            console.error('Error updating booking:', error);
-            set.status = 500;
-            return { error: 'Failed to update booking' };
-        }
-    }, {
-        detail: {
-            tags: ['Rides'],
-            summary: 'Update ride booking',
-            description: 'Updates a ride booking status or custom price'
+            console.error('Error fetching user:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
         }
     })
 
-    .get('/api/users/:userId/rides', async ({ params, query, set }): Promise<ApiResponse<RideBooking[]>> => {
+    // Get user by email
+    .get('/api/users/email/:email', async ({ params }: { params: { email: string } }) => {
         try {
-            const { userId } = params;
+            const { email } = params;
 
-            if (!userId || typeof userId !== 'string') {
-                set.status = 400;
-                return { error: 'Valid user ID is required' };
+            const user = await kv.get<User>(`user:${decodeURIComponent(email)}`);
+
+            if (!user) {
+                return {
+                    error: 'User not found',
+                    status: 404,
+                };
             }
 
-            const limitParam = query.limit as string | undefined;
-            let limit = 10;
+            return { user };
 
-            if (limitParam) {
-                const parsedLimit = parseInt(limitParam, 10);
-                if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
-                    set.status = 400;
-                    return { error: 'Limit must be a number between 1 and 100' };
-                }
-                limit = parsedLimit;
-            }
-
-            const bookings = await Database.getUserBookings(userId, limit);
-            return { bookings };
         } catch (error) {
-            console.error('Error fetching user bookings:', error);
-            set.status = 500;
-            return { error: 'Failed to fetch bookings' };
-        }
-    }, {
-        detail: {
-            tags: ['Rides'],
-            summary: 'Get user ride history',
-            description: 'Retrieves ride booking history for a specific user'
+            console.error('Error fetching user:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
         }
     })
 
-    // Analytics Endpoints
-    .post('/api/analytics/location-select', async ({ body, set }): Promise<ApiResponse> => {
+    // Get all users (for admin purposes - consider adding auth)
+    .get('/api/users', async () => {
         try {
-            const requestBody = body as LocationAnalyticsRequest;
-            const { userId, locationType, locationData } = requestBody;
+            // This is a simple implementation - in production, you'd want pagination
+            // and proper admin authentication
+            const keys = await kv.keys('user:*');
+            const emailKeys = keys.filter(key => !key.includes('user:id:'));
 
-            if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
-                set.status = 400;
-                return { error: 'Valid userId is required' };
-            }
+            const users = await Promise.all(
+                emailKeys.map(async (key) => {
+                    return await kv.get<User>(key);
+                })
+            );
 
-            if (!locationType || !['origin', 'destination'].includes(locationType)) {
-                set.status = 400;
-                return { error: 'Valid locationType (origin|destination) is required' };
-            }
+            return { users: users.filter(Boolean) };
 
-            if (!validateLocationData(locationData)) {
-                set.status = 400;
-                return { error: 'Valid location data is required' };
-            }
-
-            // Log for debugging/analytics
-            console.log(`User ${userId} selected ${locationType}:`, locationData.address);
-
-            return { success: true };
         } catch (error) {
-            console.error('Error tracking location selection:', error);
-            set.status = 500;
-            return { error: 'Failed to track selection' };
-        }
-    }, {
-        detail: {
-            tags: ['Analytics'],
-            summary: 'Track location selection',
-            description: 'Tracks when a user selects an origin or destination'
+            console.error('Error fetching users:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
         }
     })
 
-    .post('/api/analytics/search', async ({ body, set }): Promise<ApiResponse> => {
+    // Delete user
+    .delete('/api/users/:id', async ({ params }: { params: { id: string } }) => {
         try {
-            const requestBody = body as SearchAnalyticsRequest;
-            const { userId, query, resultsCount } = requestBody;
+            const { id } = params;
 
-            if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
-                set.status = 400;
-                return { error: 'Valid userId is required' };
+            // Get user first to find email
+            const user = await kv.get<User>(`user:id:${id}`);
+
+            if (!user) {
+                return {
+                    error: 'User not found',
+                    status: 404,
+                };
             }
 
-            if (!query || typeof query !== 'string' || query.trim().length === 0) {
-                set.status = 400;
-                return { error: 'Valid search query is required' };
-            }
+            // Delete both keys
+            await kv.del(`user:${user.email}`);
+            await kv.del(`user:id:${id}`);
 
-            if (typeof resultsCount !== 'number' || resultsCount < 0) {
-                set.status = 400;
-                return { error: 'Valid resultsCount (non-negative number) is required' };
-            }
+            return {
+                success: true,
+                message: 'User deleted successfully'
+            };
 
-            await Database.trackLocationSearch(userId, query.trim(), resultsCount);
-            return { success: true };
         } catch (error) {
-            console.error('Error tracking search:', error);
-            set.status = 500;
-            return { error: 'Failed to track search' };
-        }
-    }, {
-        detail: {
-            tags: ['Analytics'],
-            summary: 'Track search queries',
-            description: 'Tracks user search queries and result counts'
+            console.error('Error deleting user:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
         }
     })
 
-    // Error handling middleware
-    .onError(({ error, set }) => {
-        console.error('Unhandled error:', error);
+    .listen(3001);
 
-        // Handle different error types
-        if (error instanceof Error) {
-            if (error.message.includes('JSON')) {
-                set.status = 400;
-                return { error: 'Invalid JSON in request body' };
-            }
-
-            if (error.message.includes('validation')) {
-                set.status = 400;
-                return { error: 'Validation error' };
-            }
-        }
-
-        // Handle Elysia-specific errors
-        if (typeof error === 'object' && error !== null && 'status' in error) {
-            const elysiaError = error as { status: number; message?: string };
-            set.status = elysiaError.status;
-            return { error: elysiaError.message || 'Request error' };
-        }
-
-        set.status = 500;
-        return { error: 'Internal server error' };
-    })
-
-    .listen({
-        port: process.env.PORT ? parseInt(process.env.PORT) : 3000,
-        hostname: process.env.HOST || '0.0.0.0'
-    });
-
-console.log(`🚗 Ride booking server is running on ${process.env.HOST || '0.0.0.0'}:${app.server?.port}`);
-console.log(`📚 API documentation available at: http://${process.env.HOST || 'localhost'}:${app.server?.port}/swagger`);
+console.log(`🦊 Elysia is running at http://localhost:3001`);
+console.log(`Health check: http://localhost:3001/health`);
 
 export default app;
