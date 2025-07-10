@@ -1,7 +1,6 @@
-
 import { Elysia } from 'elysia';
 import { cors } from '@elysiajs/cors';
-import { kv } from '@vercel/kv';
+import { createClient } from 'redis';
 import { v4 as uuidv4 } from 'uuid';
 
 // Types
@@ -14,6 +13,27 @@ export interface User {
     updatedAt: string;
 }
 
+// Initialize Redis client with better error handling
+const redis = createClient({
+    url: process.env.REDIS_URL
+});
+
+// Handle Redis connection errors
+redis.on('error', (err) => {
+    console.error('Redis connection error:', err.message);
+});
+
+redis.on('connect', () => {
+    console.log('Redis connected successfully');
+});
+
+redis.on('ready', () => {
+    console.log('Redis ready to accept commands');
+});
+
+// Connect to Redis
+await redis.connect();
+
 // Helper function to create username from email
 function createUsernameFromEmail(email: string): string {
     const username = email.split('@')[0];
@@ -24,10 +44,24 @@ function createUsernameFromEmail(email: string): string {
 
 const app = new Elysia()
     .use(cors())
-    .get('/health', () => ({
-        status: 'OK',
-        timestamp: new Date().toISOString(),
-    }))
+    .get('/health', async () => {
+        try {
+            // Check Redis connection
+            await redis.ping();
+            return {
+                status: 'OK',
+                timestamp: new Date().toISOString(),
+                redis: 'connected',
+            };
+        } catch (error) {
+            return {
+                status: 'ERROR',
+                timestamp: new Date().toISOString(),
+                redis: 'disconnected',
+                error: error instanceof Error ? error.message : 'Unknown error',
+            };
+        }
+    })
 
     // Check if user exists
     .post('/api/users/check', async ({ body }: { body: { email: string } }) => {
@@ -42,9 +76,10 @@ const app = new Elysia()
             }
 
             // Check if user exists
-            const existingUser = await kv.get<User>(`user:${email}`);
+            const userData = await redis.get(`user:${email}`);
 
-            if (existingUser) {
+            if (userData) {
+                const existingUser: User = JSON.parse(userData);
                 return {
                     exists: true,
                     user: existingUser
@@ -77,8 +112,8 @@ const app = new Elysia()
             }
 
             // Check if user already exists
-            const existingUser = await kv.get<User>(`user:${email}`);
-            if (existingUser) {
+            const existingUserData = await redis.get(`user:${email}`);
+            if (existingUserData) {
                 return {
                     error: 'User already exists',
                     status: 400,
@@ -99,11 +134,12 @@ const app = new Elysia()
                 updatedAt: now,
             };
 
-            // Store user in KV
-            await kv.set(`user:${email}`, newUser);
+            // Store user in Redis
+            const userJson = JSON.stringify(newUser);
+            await redis.set(`user:${email}`, userJson);
 
             // Also store by ID for quick lookups
-            await kv.set(`user:id:${userId}`, newUser);
+            await redis.set(`user:id:${userId}`, userJson);
 
             return {
                 success: true,
@@ -132,13 +168,15 @@ const app = new Elysia()
             }
 
             // Get existing user
-            const existingUser = await kv.get<User>(`user:${email}`);
-            if (!existingUser) {
+            const existingUserData = await redis.get(`user:${email}`);
+            if (!existingUserData) {
                 return {
                     error: 'User not found',
                     status: 404,
                 };
             }
+
+            const existingUser: User = JSON.parse(existingUserData);
 
             // Update user
             const updatedUser: User = {
@@ -148,9 +186,10 @@ const app = new Elysia()
                 updatedAt: new Date().toISOString(),
             };
 
-            // Update in KV
-            await kv.set(`user:${email}`, updatedUser);
-            await kv.set(`user:id:${existingUser.id}`, updatedUser);
+            // Update in Redis
+            const userJson = JSON.stringify(updatedUser);
+            await redis.set(`user:${email}`, userJson);
+            await redis.set(`user:id:${existingUser.id}`, userJson);
 
             return {
                 success: true,
@@ -171,15 +210,16 @@ const app = new Elysia()
         try {
             const { id } = params;
 
-            const user = await kv.get<User>(`user:id:${id}`);
+            const userData = await redis.get(`user:id:${id}`);
 
-            if (!user) {
+            if (!userData) {
                 return {
                     error: 'User not found',
                     status: 404,
                 };
             }
 
+            const user: User = JSON.parse(userData);
             return { user };
 
         } catch (error) {
@@ -196,15 +236,16 @@ const app = new Elysia()
         try {
             const { email } = params;
 
-            const user = await kv.get<User>(`user:${decodeURIComponent(email)}`);
+            const userData = await redis.get(`user:${decodeURIComponent(email)}`);
 
-            if (!user) {
+            if (!userData) {
                 return {
                     error: 'User not found',
                     status: 404,
                 };
             }
 
+            const user: User = JSON.parse(userData);
             return { user };
 
         } catch (error) {
@@ -221,12 +262,13 @@ const app = new Elysia()
         try {
             // This is a simple implementation - in production, you'd want pagination
             // and proper admin authentication
-            const keys = await kv.keys('user:*');
+            const keys = await redis.keys('user:*');
             const emailKeys = keys.filter(key => !key.includes('user:id:'));
 
             const users = await Promise.all(
                 emailKeys.map(async (key) => {
-                    return await kv.get<User>(key);
+                    const userData = await redis.get(key);
+                    return userData ? JSON.parse(userData) : null;
                 })
             );
 
@@ -247,18 +289,20 @@ const app = new Elysia()
             const { id } = params;
 
             // Get user first to find email
-            const user = await kv.get<User>(`user:id:${id}`);
+            const userData = await redis.get(`user:id:${id}`);
 
-            if (!user) {
+            if (!userData) {
                 return {
                     error: 'User not found',
                     status: 404,
                 };
             }
 
+            const user: User = JSON.parse(userData);
+
             // Delete both keys
-            await kv.del(`user:${user.email}`);
-            await kv.del(`user:id:${id}`);
+            await redis.del(`user:${user.email}`);
+            await redis.del(`user:id:${id}`);
 
             return {
                 success: true,
@@ -276,7 +320,7 @@ const app = new Elysia()
 
     .listen(3001);
 
-console.log(`🦊 Elysia is running at http://localhost:3001`);
+console.log(`Elysia is running at http://localhost:3001`);
 console.log(`Health check: http://localhost:3001/health`);
 
 export default app;
