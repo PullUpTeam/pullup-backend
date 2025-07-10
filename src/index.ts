@@ -44,6 +44,12 @@ const redis = createClient({
 // Connect to Redis
 await redis.connect();
 
+export function createUsernameFromEmail(email: string): string {
+    const username = email.split('@')[0];
+    // @ts-ignore
+    return username.replace(/[^a-zA-Z0-9._]/g, '').toLowerCase();
+}
+
 
 const app = new Elysia()
     .use(cors())
