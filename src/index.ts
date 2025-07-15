@@ -4,40 +4,65 @@ import { createClient } from 'redis';
 import { userRoutes } from './users';
 import { rideRoutes } from './rides';
 
-// Initialize Redis client with better error handling
-const redis = createClient({
-    url: process.env.REDIS_URL
+// Setup Redis
+const redis = createClient({ url: Bun.env.REDIS_URL || 'redis://localhost:6379' });
+const redisSub = createClient({ url: Bun.env.REDIS_URL || 'redis://localhost:6379' });
+await redis.connect();
+await redisSub.connect();
+
+const CHANNEL = 'rides';
+const clients = new Set<WebSocket>();
+
+await redisSub.subscribe(CHANNEL, (message) => {
+    console.log('📡 Redis -> WebSocket:', message);
+    for (const client of clients) {
+        if (client.readyState === client.OPEN) {
+            client.send(message);
+        }
+    }
 });
 
-// Connect to Redis
-await redis.connect();
-
+// Main Elysia app
 const app = new Elysia()
     .use(cors())
-    .decorate('redis', redis)
-    .get('/health', async ({ redis }) => {
-        try {
-            // Check Redis connection
-            await redis.ping();
-            return {
-                status: 'OK',
-                timestamp: new Date().toISOString(),
-                redis: 'connected',
-            };
-        } catch (error) {
-            return {
-                status: 'ERROR',
-                timestamp: new Date().toISOString(),
-                redis: 'disconnected',
-                error: error instanceof Error ? error.message : 'Unknown error',
-            };
-        }
-    })
+
+    // 👇 Include route modules
     .use(userRoutes)
     .use(rideRoutes)
-    .listen(3001);
+
+    // 👇 WebSocket endpoint
+    .ws('/ws', {
+        open(ws) {
+            clients.add(ws);
+            console.log('🔌 WebSocket connected. Total:', clients.size);
+        },
+        close(ws) {
+            clients.delete(ws);
+            console.log('❌ WebSocket disconnected. Total:', clients.size);
+        },
+        message(ws, message) {
+            console.log('📨 WS received:', message);
+
+            try {
+                let parsed;
+                if (typeof message === 'string') {
+                    parsed = JSON.parse(message);
+                } else if (typeof message === 'object') {
+                    parsed = message;
+                } else {
+                    throw new Error('Unexpected message format');
+                }
+
+                if (parsed.type === 'locationUpdate') {
+                    redis.publish(CHANNEL, JSON.stringify(parsed));
+                }
+            } catch (err) {
+                console.error('❗ Invalid message format:', err);
+            }
+        }
+    })
+    .listen(3000);
 
 console.log(`Elysia is running at http://localhost:3001`);
 console.log(`Health check: http://localhost:3001/health`);
-
-export default app;
+console.log('🚀 Server running at http://localhost:3000');
