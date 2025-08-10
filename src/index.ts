@@ -3,6 +3,7 @@ import { cors } from '@elysiajs/cors';
 import { createClient } from 'redis';
 import { userRoutes } from './users';
 import { rideRoutes } from './rides';
+import {driverRoutes} from "./drivers.ts";
 
 // Initialize Redis client with better error handling
 const redis = createClient({
@@ -35,6 +36,7 @@ const app = new Elysia()
     })
     .use(userRoutes)
     .use(rideRoutes)
+    .use(driverRoutes)
     .listen(3001);
 
 console.log(`Elysia is running at http://localhost:3001`);
