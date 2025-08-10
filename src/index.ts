@@ -3,6 +3,7 @@ import { cors } from '@elysiajs/cors';
 import { createClient } from 'redis';
 import { userRoutes } from './users';
 import { rideRoutes } from './rides';
+import {driverRoutes} from "./drivers.ts";
 
 // Setup Redis
 const redis = createClient({ url: Bun.env.REDIS_URL || 'redis://localhost:6379' });
@@ -29,7 +30,6 @@ const app = new Elysia()
     // 👇 Include route modules
     .use(userRoutes)
     .use(rideRoutes)
-
     // 👇 WebSocket endpoint
     .ws('/ws', {
         open(ws) {
@@ -61,7 +61,8 @@ const app = new Elysia()
             }
         }
     })
-    .listen(3000);
+    .use(driverRoutes)
+    .listen(3001);
 
 console.log(`Elysia is running at http://localhost:3001`);
 console.log(`Health check: http://localhost:3001/health`);
