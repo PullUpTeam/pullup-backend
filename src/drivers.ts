@@ -391,470 +391,720 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
         }
     })
 
-        // Submit new driver application
+    // Submit new driver application
     .post('/apply', async ({ body, redis }: { body: DriverApplicationRequest; redis: any }) => {
-            try {
-                const applicationData = body;
+        try {
+            const applicationData = body;
 
-                // Validate application data
-                const validationError = validateDriverApplication(applicationData);
-                if (validationError) {
-                    return {
-                        error: validationError,
-                        status: 400,
-                    };
-                }
-
-                // Check if driver already exists
-                const existingDriverData = await redis.get(`driver:${applicationData.email}`);
-                if (existingDriverData) {
-                    return {
-                        error: 'Driver application already exists for this email',
-                        status: 400,
-                    };
-                }
-
-                // Check if license number is already in use
-                const existingLicenseData = await redis.get(`driver:license:${applicationData.licenseNumber}`);
-                if (existingLicenseData) {
-                    return {
-                        error: 'Driver with this license number already exists',
-                        status: 400,
-                    };
-                }
-
-                // Check if vehicle plate is already in use
-                const existingPlateData = await redis.get(`driver:plate:${applicationData.vehiclePlate}`);
-                if (existingPlateData) {
-                    return {
-                        error: 'Vehicle with this plate number is already registered',
-                        status: 400,
-                    };
-                }
-
-                // Create new driver application
-                const driverId = uuidv4();
-                const now = new Date().toISOString();
-
-                const newDriver: Driver = {
-                    id: driverId,
-                    fullName: applicationData.fullName,
-                    email: applicationData.email,
-                    phoneNumber: applicationData.phoneNumber,
-                    address: applicationData.address,
-                    licenseNumber: applicationData.licenseNumber,
-                    vehicleModel: applicationData.vehicleModel,
-                    vehicleYear: applicationData.vehicleYear,
-                    vehiclePlate: applicationData.vehiclePlate,
-                    motivation: applicationData.motivation,
-                    status: 'pending',
-                    availability: 'offline', // New drivers start offline
-                    applicationDate: now,
-                    createdAt: now,
-                    updatedAt: now,
-                };
-
-                // Store driver in Redis with multiple keys for different lookups
-                const driverJson = JSON.stringify(newDriver);
-                await redis.set(`driver:${applicationData.email}`, driverJson);
-                await redis.set(`driver:id:${driverId}`, driverJson);
-                await redis.set(`driver:license:${applicationData.licenseNumber}`, driverJson);
-                await redis.set(`driver:plate:${applicationData.vehiclePlate}`, driverJson);
-
+            // Validate application data
+            const validationError = validateDriverApplication(applicationData);
+            if (validationError) {
                 return {
-                    success: true,
-                    driver: newDriver,
-                    message: 'Driver application submitted successfully'
-                };
-
-            } catch (error) {
-                console.error('Error creating driver application:', error);
-                return {
-                    error: 'Internal server error',
-                    status: 500,
+                    error: validationError,
+                    status: 400,
                 };
             }
-        })
 
-            // Update driver information or status
-            .put('/update', async ({ body, redis }: { body: DriverUpdateRequest; redis: any }) => {
-                try {
-                    const { id, ...updateData } = body;
+            // Check if driver already exists
+            const existingDriverData = await redis.get(`driver:${applicationData.email}`);
+            if (existingDriverData) {
+                return {
+                    error: 'Driver application already exists for this email',
+                    status: 400,
+                };
+            }
 
-                    if (!id) {
-                        return {
-                            error: 'Driver ID is required',
-                            status: 400,
-                        };
-                    }
+            // Check if license number is already in use
+            const existingLicenseData = await redis.get(`driver:license:${applicationData.licenseNumber}`);
+            if (existingLicenseData) {
+                return {
+                    error: 'Driver with this license number already exists',
+                    status: 400,
+                };
+            }
 
-                    // Get existing driver
-                    const existingDriverData = await redis.get(`driver:id:${id}`);
-                    if (!existingDriverData) {
-                        return {
-                            error: 'Driver not found',
-                            status: 404,
-                        };
-                    }
+            // Check if vehicle plate is already in use
+            const existingPlateData = await redis.get(`driver:plate:${applicationData.vehiclePlate}`);
+            if (existingPlateData) {
+                return {
+                    error: 'Vehicle with this plate number is already registered',
+                    status: 400,
+                };
+            }
 
-                    const existingDriver: Driver = JSON.parse(existingDriverData);
+            // Create new driver application
+            const driverId = uuidv4();
+            const now = new Date().toISOString();
 
-                    // If email is being updated, check for conflicts
-                    if (updateData.email && updateData.email !== existingDriver.email) {
-                        const emailConflict = await redis.get(`driver:${updateData.email}`);
-                        if (emailConflict) {
-                            return {
-                                error: 'Email already in use by another driver',
-                                status: 400,
-                            };
-                        }
-                    }
+            // ✅ Updated to include missing fields for frontend compatibility
+            const newDriver = {
+                id: driverId,
+                fullName: applicationData.fullName,
+                email: applicationData.email,
+                phoneNumber: applicationData.phoneNumber,
+                address: applicationData.address,
+                licenseNumber: applicationData.licenseNumber,
+                vehicleModel: applicationData.vehicleModel,
+                vehicleYear: applicationData.vehicleYear,
+                vehiclePlate: applicationData.vehiclePlate,
+                motivation: applicationData.motivation,
+                status: 'pending',
+                availability: 'offline', // New drivers start offline
+                applicationDate: now,
+                createdAt: now,
+                updatedAt: now,
+                // ✅ Add missing fields for frontend compatibility
+                username: applicationData.fullName,
+                walletAddress: '', // Will be updated later when driver connects wallet
+                isDriver: false, // Will be true when approved
+            };
 
-                    // If license number is being updated, check for conflicts
-                    if (updateData.licenseNumber && updateData.licenseNumber !== existingDriver.licenseNumber) {
-                        const licenseConflict = await redis.get(`driver:license:${updateData.licenseNumber}`);
-                        if (licenseConflict) {
-                            return {
-                                error: 'License number already in use',
-                                status: 400,
-                            };
-                        }
-                    }
+            // Store driver in Redis with multiple keys for different lookups
+            const driverJson = JSON.stringify(newDriver);
+            await redis.set(`driver:${applicationData.email}`, driverJson);
+            await redis.set(`driver:id:${driverId}`, driverJson);
+            await redis.set(`driver:license:${applicationData.licenseNumber}`, driverJson);
+            await redis.set(`driver:plate:${applicationData.vehiclePlate}`, driverJson);
 
-                    // If vehicle plate is being updated, check for conflicts
-                    if (updateData.vehiclePlate && updateData.vehiclePlate !== existingDriver.vehiclePlate) {
-                        const plateConflict = await redis.get(`driver:plate:${updateData.vehiclePlate}`);
-                        if (plateConflict) {
-                            return {
-                                error: 'Vehicle plate already in use',
-                                status: 400,
-                            };
-                        }
-                    }
+            // ✅ Return simplified driver interface for frontend
+            const responseDriver = {
+                id: newDriver.id,
+                email: newDriver.email,
+                username: newDriver.fullName,
+                walletAddress: newDriver.walletAddress,
+                isDriver: newDriver.status === 'approved',
+                createdAt: newDriver.createdAt,
+                updatedAt: newDriver.updatedAt,
+            };
 
-                    // Update driver
-                    const updatedDriver: Driver = {
-                        ...existingDriver,
-                        ...updateData,
-                        updatedAt: new Date().toISOString(),
-                        ...(updateData.status === 'approved' && !existingDriver.approvalDate ? { approvalDate: new Date().toISOString() } : {}),
-                    };
+            return {
+                success: true,
+                driver: responseDriver,
+                message: 'Driver application submitted successfully'
+            };
 
-                    // Update in Redis - remove old keys if email, license, or plate changed
-                    const driverJson = JSON.stringify(updatedDriver);
+        } catch (error) {
+            console.error('Error creating driver application:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
 
-                    if (updateData.email && updateData.email !== existingDriver.email) {
-                        await redis.del(`driver:${existingDriver.email}`);
-                        await redis.set(`driver:${updateData.email}`, driverJson);
-                    } else {
-                        await redis.set(`driver:${existingDriver.email}`, driverJson);
-                    }
+    // Update driver information or status
+    .put('/update', async ({ body, redis }: { body: DriverUpdateRequest; redis: any }) => {
+        try {
+            const { id, ...updateData } = body;
 
-                    if (updateData.licenseNumber && updateData.licenseNumber !== existingDriver.licenseNumber) {
-                        await redis.del(`driver:license:${existingDriver.licenseNumber}`);
-                        await redis.set(`driver:license:${updateData.licenseNumber}`, driverJson);
-                    } else {
-                        await redis.set(`driver:license:${existingDriver.licenseNumber}`, driverJson);
-                    }
+            if (!id) {
+                return {
+                    error: 'Driver ID is required',
+                    status: 400,
+                };
+            }
 
-                    if (updateData.vehiclePlate && updateData.vehiclePlate !== existingDriver.vehiclePlate) {
-                        await redis.del(`driver:plate:${existingDriver.vehiclePlate}`);
-                        await redis.set(`driver:plate:${updateData.vehiclePlate}`, driverJson);
-                    } else {
-                        await redis.set(`driver:plate:${existingDriver.vehiclePlate}`, driverJson);
-                    }
+            // Get existing driver
+            const existingDriverData = await redis.get(`driver:id:${id}`);
+            if (!existingDriverData) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
 
-                    await redis.set(`driver:id:${id}`, driverJson);
+            const existingDriver: Driver = JSON.parse(existingDriverData);
 
+            // If email is being updated, check for conflicts
+            if (updateData.email && updateData.email !== existingDriver.email) {
+                const emailConflict = await redis.get(`driver:${updateData.email}`);
+                if (emailConflict) {
                     return {
-                        success: true,
-                        driver: updatedDriver
-                    };
-
-                } catch (error) {
-                    console.error('Error updating driver:', error);
-                    return {
-                        error: 'Internal server error',
-                        status: 500,
+                        error: 'Email already in use by another driver',
+                        status: 400,
                     };
                 }
-            })
+            }
 
-            // Get driver by ID
-            .get('/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
-                try {
-                    const { id } = params;
-
-                    const driverData = await redis.get(`driver:id:${id}`);
-
-                    if (!driverData) {
-                        return {
-                            error: 'Driver not found',
-                            status: 404,
-                        };
-                    }
-
-                    const driver: Driver = JSON.parse(driverData);
-                    return { driver };
-
-                } catch (error) {
-                    console.error('Error fetching driver:', error);
+            // If license number is being updated, check for conflicts
+            if (updateData.licenseNumber && updateData.licenseNumber !== existingDriver.licenseNumber) {
+                const licenseConflict = await redis.get(`driver:license:${updateData.licenseNumber}`);
+                if (licenseConflict) {
                     return {
-                        error: 'Internal server error',
-                        status: 500,
+                        error: 'License number already in use',
+                        status: 400,
                     };
                 }
-            })
+            }
 
-            // Get driver by email
-            .get('/email/:email', async ({ params, redis }: { params: { email: string }; redis: any }) => {
-                try {
-                    const { email } = params;
-
-                    const driverData = await redis.get(`driver:${decodeURIComponent(email)}`);
-
-                    if (!driverData) {
-                        return {
-                            error: 'Driver not found',
-                            status: 404,
-                        };
-                    }
-
-                    const driver: Driver = JSON.parse(driverData);
-                    return { driver };
-
-                } catch (error) {
-                    console.error('Error fetching driver:', error);
+            // If vehicle plate is being updated, check for conflicts
+            if (updateData.vehiclePlate && updateData.vehiclePlate !== existingDriver.vehiclePlate) {
+                const plateConflict = await redis.get(`driver:plate:${updateData.vehiclePlate}`);
+                if (plateConflict) {
                     return {
-                        error: 'Internal server error',
-                        status: 500,
+                        error: 'Vehicle plate already in use',
+                        status: 400,
                     };
                 }
-            })
+            }
 
-            // Get driver by license number
-            .get('/license/:licenseNumber', async ({ params, redis }: { params: { licenseNumber: string }; redis: any }) => {
-                try {
-                    const { licenseNumber } = params;
+            // Update driver
+            const updatedDriver: Driver = {
+                ...existingDriver,
+                ...updateData,
+                updatedAt: new Date().toISOString(),
+                ...(updateData.status === 'approved' && !existingDriver.approvalDate ? { approvalDate: new Date().toISOString() } : {}),
+            };
 
-                    const driverData = await redis.get(`driver:license:${decodeURIComponent(licenseNumber)}`);
+            // Update in Redis - remove old keys if email, license, or plate changed
+            const driverJson = JSON.stringify(updatedDriver);
 
-                    if (!driverData) {
-                        return {
-                            error: 'Driver not found',
-                            status: 404,
-                        };
+            if (updateData.email && updateData.email !== existingDriver.email) {
+                await redis.del(`driver:${existingDriver.email}`);
+                await redis.set(`driver:${updateData.email}`, driverJson);
+            } else {
+                await redis.set(`driver:${existingDriver.email}`, driverJson);
+            }
+
+            if (updateData.licenseNumber && updateData.licenseNumber !== existingDriver.licenseNumber) {
+                await redis.del(`driver:license:${existingDriver.licenseNumber}`);
+                await redis.set(`driver:license:${updateData.licenseNumber}`, driverJson);
+            } else {
+                await redis.set(`driver:license:${existingDriver.licenseNumber}`, driverJson);
+            }
+
+            if (updateData.vehiclePlate && updateData.vehiclePlate !== existingDriver.vehiclePlate) {
+                await redis.del(`driver:plate:${existingDriver.vehiclePlate}`);
+                await redis.set(`driver:plate:${updateData.vehiclePlate}`, driverJson);
+            } else {
+                await redis.set(`driver:plate:${existingDriver.vehiclePlate}`, driverJson);
+            }
+
+            await redis.set(`driver:id:${id}`, driverJson);
+
+            return {
+                success: true,
+                driver: updatedDriver
+            };
+
+        } catch (error) {
+            console.error('Error updating driver:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // ✅ FIXED: Get driver by ID - returns simplified interface for frontend
+    .get('/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
+        try {
+            const { id } = params;
+
+            const driverData = await redis.get(`driver:id:${id}`);
+
+            if (!driverData) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
+
+            const fullDriver = JSON.parse(driverData);
+
+            // ✅ Convert to simplified driver interface for frontend
+            const driver = {
+                id: fullDriver.id,
+                email: fullDriver.email,
+                username: fullDriver.fullName || fullDriver.username || fullDriver.email.split('@')[0],
+                walletAddress: fullDriver.walletAddress || '',
+                isDriver: fullDriver.status === 'approved',
+                createdAt: fullDriver.createdAt,
+                updatedAt: fullDriver.updatedAt,
+            };
+
+            return { driver };
+
+        } catch (error) {
+            console.error('Error fetching driver:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // ✅ NEW: Get driver location endpoint (required by frontend)
+    .get('/:id/location', async ({ params, redis }: {
+        params: { id: string };
+        redis: any;
+    }) => {
+        try {
+            const { id: driverId } = params;
+
+            // First try to get location from dedicated location storage
+            let locationData = await redis.get(`driver:location:${driverId}`);
+
+            if (!locationData) {
+                // Fallback: get location from driver record
+                const driverData = await redis.get(`driver:id:${driverId}`);
+                if (driverData) {
+                    const driver = JSON.parse(driverData);
+                    if (driver.latitude && driver.longitude) {
+                        locationData = JSON.stringify({
+                            driverId,
+                            latitude: driver.latitude,
+                            longitude: driver.longitude,
+                            timestamp: driver.lastLocationUpdate || new Date().toISOString(),
+                        });
                     }
-
-                    const driver: Driver = JSON.parse(driverData);
-                    return { driver };
-
-                } catch (error) {
-                    console.error('Error fetching driver:', error);
-                    return {
-                        error: 'Internal server error',
-                        status: 500,
-                    };
                 }
-            })
+            }
 
-            // Get all drivers with optional status filter
-            .get('/', async ({ query, redis }: { query: { status?: string; page?: string; limit?: string }; redis: any }) => {
-                try {
-                    const status = query.status;
-                    const page = parseInt(query.page || '1');
-                    const limit = parseInt(query.limit || '50');
-                    const offset = (page - 1) * limit;
+            if (!locationData) {
+                return {
+                    location: null
+                };
+            }
 
-                    // Get all driver keys (excluding license and plate keys)
-                    const keys = await redis.keys('driver:*');
-                    const emailKeys = keys.filter((key: string) =>
-                        !key.includes('driver:id:') &&
-                        !key.includes('driver:license:') &&
-                        !key.includes('driver:plate:')
-                    );
+            const location = JSON.parse(locationData);
 
-                    let drivers = await Promise.all(
-                        emailKeys.map(async (key: string) => {
-                            const driverData = await redis.get(key);
-                            return driverData ? JSON.parse(driverData) : null;
-                        })
-                    );
+            return {
+                location
+            };
 
-                    drivers = drivers.filter(Boolean);
+        } catch (error) {
+            console.error('Error getting driver location:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
 
-                    // Filter by status if provided
-                    if (status) {
-                        drivers = drivers.filter((driver: Driver) => driver.status === status);
-                    }
+    // ✅ NEW: Update driver location endpoint (for real-time tracking)
+    .put('/:id/location', async ({ params, body, redis }: {
+        params: { id: string };
+        body: {
+            latitude: number;
+            longitude: number;
+            heading?: number;
+            speed?: number;
+            accuracy?: number;
+        };
+        redis: any;
+    }) => {
+        try {
+            const { id: driverId } = params;
+            const { latitude, longitude, heading, speed, accuracy } = body;
 
-                    // Sort by application date (newest first)
-                    drivers.sort((a: Driver, b: Driver) =>
-                        new Date(b.applicationDate).getTime() - new Date(a.applicationDate).getTime()
-                    );
+            if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+                return {
+                    error: 'Valid latitude and longitude are required',
+                    status: 400,
+                };
+            }
 
-                    // Apply pagination
-                    const total = drivers.length;
-                    const paginatedDrivers = drivers.slice(offset, offset + limit);
+            // Check if driver exists
+            const driverData = await redis.get(`driver:id:${driverId}`);
+            if (!driverData) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
 
-                    return {
-                        drivers: paginatedDrivers,
-                        pagination: {
-                            page,
-                            limit,
-                            total,
-                            totalPages: Math.ceil(total / limit)
-                        }
-                    };
+            const locationUpdate = {
+                driverId,
+                latitude,
+                longitude,
+                heading,
+                speed,
+                accuracy,
+                timestamp: new Date().toISOString(),
+            };
 
-                } catch (error) {
-                    console.error('Error fetching drivers:', error);
-                    return {
-                        error: 'Internal server error',
-                        status: 500,
-                    };
+            // Store location in Redis (separate from driver record for performance)
+            await redis.set(`driver:location:${driverId}`, JSON.stringify(locationUpdate));
+
+            // Optional: Set expiration (locations older than 10 minutes are stale)
+            await redis.expire(`driver:location:${driverId}`, 600); // 10 minutes
+
+            // Also update the driver record with latest location
+            const driver = JSON.parse(driverData);
+            const updatedDriver = {
+                ...driver,
+                latitude,
+                longitude,
+                lastLocationUpdate: locationUpdate.timestamp,
+                updatedAt: new Date().toISOString(),
+            };
+
+            // Update driver record
+            const driverJson = JSON.stringify(updatedDriver);
+            await redis.set(`driver:${driver.email}`, driverJson);
+            await redis.set(`driver:id:${driverId}`, driverJson);
+            await redis.set(`driver:license:${driver.licenseNumber}`, driverJson);
+            await redis.set(`driver:plate:${driver.vehiclePlate}`, driverJson);
+
+            return {
+                success: true,
+                location: locationUpdate
+            };
+
+        } catch (error) {
+            console.error('Error updating driver location:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // Update driver wallet address
+    .put('/:id/wallet', async ({ params, body, redis }: {
+        params: { id: string };
+        body: { walletAddress: string };
+        redis: any;
+    }) => {
+        try {
+            const { id } = params;
+            const { walletAddress } = body;
+
+            if (!walletAddress) {
+                return {
+                    error: 'Wallet address is required',
+                    status: 400,
+                };
+            }
+
+            // Get existing driver
+            const existingDriverData = await redis.get(`driver:id:${id}`);
+            if (!existingDriverData) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
+
+            const existingDriver = JSON.parse(existingDriverData);
+
+            // Update driver with wallet address
+            const updatedDriver = {
+                ...existingDriver,
+                walletAddress,
+                updatedAt: new Date().toISOString(),
+            };
+
+            // Update all Redis keys
+            const driverJson = JSON.stringify(updatedDriver);
+            await redis.set(`driver:${existingDriver.email}`, driverJson);
+            await redis.set(`driver:id:${id}`, driverJson);
+            await redis.set(`driver:license:${existingDriver.licenseNumber}`, driverJson);
+            await redis.set(`driver:plate:${existingDriver.vehiclePlate}`, driverJson);
+
+            // ✅ Return simplified driver interface
+            const responseDriver = {
+                id: updatedDriver.id,
+                email: updatedDriver.email,
+                username: updatedDriver.fullName || updatedDriver.username,
+                walletAddress: updatedDriver.walletAddress,
+                isDriver: updatedDriver.status === 'approved',
+                createdAt: updatedDriver.createdAt,
+                updatedAt: updatedDriver.updatedAt,
+            };
+
+            return {
+                success: true,
+                driver: responseDriver
+            };
+
+        } catch (error) {
+            console.error('Error updating driver wallet:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // Get driver by email
+    .get('/email/:email', async ({ params, redis }: { params: { email: string }; redis: any }) => {
+        try {
+            const { email } = params;
+
+            const driverData = await redis.get(`driver:${decodeURIComponent(email)}`);
+
+            if (!driverData) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
+
+            const driver: Driver = JSON.parse(driverData);
+            return { driver };
+
+        } catch (error) {
+            console.error('Error fetching driver:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // Get driver by license number
+    .get('/license/:licenseNumber', async ({ params, redis }: { params: { licenseNumber: string }; redis: any }) => {
+        try {
+            const { licenseNumber } = params;
+
+            const driverData = await redis.get(`driver:license:${decodeURIComponent(licenseNumber)}`);
+
+            if (!driverData) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
+
+            const driver: Driver = JSON.parse(driverData);
+            return { driver };
+
+        } catch (error) {
+            console.error('Error fetching driver:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // ✅ OPTIONAL: Get full driver details by ID (for admin/internal use)
+    .get('/:id/full', async ({ params, redis }: { params: { id: string }; redis: any }) => {
+        try {
+            const { id } = params;
+
+            const driverData = await redis.get(`driver:id:${id}`);
+
+            if (!driverData) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
+
+            const driver = JSON.parse(driverData);
+            return { driver }; // Returns full driver object
+
+        } catch (error) {
+            console.error('Error fetching full driver details:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // Get all drivers with optional status filter
+    .get('/', async ({ query, redis }: { query: { status?: string; page?: string; limit?: string }; redis: any }) => {
+        try {
+            const status = query.status;
+            const page = parseInt(query.page || '1');
+            const limit = parseInt(query.limit || '50');
+            const offset = (page - 1) * limit;
+
+            // Get all driver keys (excluding license and plate keys)
+            const keys = await redis.keys('driver:*');
+            const emailKeys = keys.filter((key: string) =>
+                !key.includes('driver:id:') &&
+                !key.includes('driver:license:') &&
+                !key.includes('driver:plate:') &&
+                !key.includes('driver:location:')
+            );
+
+            let drivers = await Promise.all(
+                emailKeys.map(async (key: string) => {
+                    const driverData = await redis.get(key);
+                    return driverData ? JSON.parse(driverData) : null;
+                })
+            );
+
+            drivers = drivers.filter(Boolean);
+
+            // Filter by status if provided
+            if (status) {
+                drivers = drivers.filter((driver: Driver) => driver.status === status);
+            }
+
+            // Sort by application date (newest first)
+            drivers.sort((a: Driver, b: Driver) =>
+                new Date(b.applicationDate).getTime() - new Date(a.applicationDate).getTime()
+            );
+
+            // Apply pagination
+            const total = drivers.length;
+            const paginatedDrivers = drivers.slice(offset, offset + limit);
+
+            return {
+                drivers: paginatedDrivers,
+                pagination: {
+                    page,
+                    limit,
+                    total,
+                    totalPages: Math.ceil(total / limit)
                 }
-            })
+            };
 
-            // Approve driver application
-            .post('/approve/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
-                try {
-                    const { id } = params;
+        } catch (error) {
+            console.error('Error fetching drivers:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
 
-                    const driverData = await redis.get(`driver:id:${id}`);
+    // Approve driver application
+    .post('/approve/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
+        try {
+            const { id } = params;
 
-                    if (!driverData) {
-                        return {
-                            error: 'Driver not found',
-                            status: 404,
-                        };
-                    }
+            const driverData = await redis.get(`driver:id:${id}`);
 
-                    const driver: Driver = JSON.parse(driverData);
+            if (!driverData) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
 
-                    if (driver.status === 'approved') {
-                        return {
-                            error: 'Driver is already approved',
-                            status: 400,
-                        };
-                    }
+            const driver: Driver = JSON.parse(driverData);
 
-                    const updatedDriver: Driver = {
-                        ...driver,
-                        status: 'approved',
-                        approvalDate: new Date().toISOString(),
-                        updatedAt: new Date().toISOString(),
-                    };
+            if (driver.status === 'approved') {
+                return {
+                    error: 'Driver is already approved',
+                    status: 400,
+                };
+            }
 
-                    // Update all Redis keys
-                    const driverJson = JSON.stringify(updatedDriver);
-                    await redis.set(`driver:${driver.email}`, driverJson);
-                    await redis.set(`driver:id:${id}`, driverJson);
-                    await redis.set(`driver:license:${driver.licenseNumber}`, driverJson);
-                    await redis.set(`driver:plate:${driver.vehiclePlate}`, driverJson);
+            const updatedDriver: Driver = {
+                ...driver,
+                status: 'approved',
+                approvalDate: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            };
 
-                    // Add to offline availability set when approved
-                    await redis.sadd('drivers:offline', id);
+            // Update all Redis keys
+            const driverJson = JSON.stringify(updatedDriver);
+            await redis.set(`driver:${driver.email}`, driverJson);
+            await redis.set(`driver:id:${id}`, driverJson);
+            await redis.set(`driver:license:${driver.licenseNumber}`, driverJson);
+            await redis.set(`driver:plate:${driver.vehiclePlate}`, driverJson);
 
-                    return {
-                        success: true,
-                        driver: updatedDriver,
-                        message: 'Driver approved successfully'
-                    };
+            // Add to offline availability set when approved
+            await redis.sadd('drivers:offline', id);
 
-                } catch (error) {
-                    console.error('Error approving driver:', error);
-                    return {
-                        error: 'Internal server error',
-                        status: 500,
-                    };
-                }
-            })
+            return {
+                success: true,
+                driver: updatedDriver,
+                message: 'Driver approved successfully'
+            };
 
-            // Reject driver application
-            .post('/reject/:id', async ({ params, body, redis }: { params: { id: string }; body: { reason?: string }; redis: any }) => {
-                try {
-                    const { id } = params;
-                    const { reason } = body || {};
+        } catch (error) {
+            console.error('Error approving driver:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
 
-                    const driverData = await redis.get(`driver:id:${id}`);
+    // Reject driver application
+    .post('/reject/:id', async ({ params, body, redis }: { params: { id: string }; body: { reason?: string }; redis: any }) => {
+        try {
+            const { id } = params;
+            const { reason } = body || {};
 
-                    if (!driverData) {
-                        return {
-                            error: 'Driver not found',
-                            status: 404,
-                        };
-                    }
+            const driverData = await redis.get(`driver:id:${id}`);
 
-                    const driver: Driver = JSON.parse(driverData);
+            if (!driverData) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
 
-                    const updatedDriver: Driver = {
-                        ...driver,
-                        status: 'rejected',
-                        updatedAt: new Date().toISOString(),
-                        ...(reason && { rejectionReason: reason }),
-                    };
+            const driver: Driver = JSON.parse(driverData);
 
-                    // Update all Redis keys
-                    const driverJson = JSON.stringify(updatedDriver);
-                    await redis.set(`driver:${driver.email}`, driverJson);
-                    await redis.set(`driver:id:${id}`, driverJson);
-                    await redis.set(`driver:license:${driver.licenseNumber}`, driverJson);
-                    await redis.set(`driver:plate:${driver.vehiclePlate}`, driverJson);
+            const updatedDriver: Driver = {
+                ...driver,
+                status: 'rejected',
+                updatedAt: new Date().toISOString(),
+                ...(reason && { rejectionReason: reason }),
+            };
 
-                    return {
-                        success: true,
-                        driver: updatedDriver,
-                        message: 'Driver application rejected'
-                    };
+            // Update all Redis keys
+            const driverJson = JSON.stringify(updatedDriver);
+            await redis.set(`driver:${driver.email}`, driverJson);
+            await redis.set(`driver:id:${id}`, driverJson);
+            await redis.set(`driver:license:${driver.licenseNumber}`, driverJson);
+            await redis.set(`driver:plate:${driver.vehiclePlate}`, driverJson);
 
-                } catch (error) {
-                    console.error('Error rejecting driver:', error);
-                    return {
-                        error: 'Internal server error',
-                        status: 500,
-                    };
-                }
-            })
+            return {
+                success: true,
+                driver: updatedDriver,
+                message: 'Driver application rejected'
+            };
 
-            // Delete driver
-            .delete('/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
-                try {
-                    const { id } = params;
+        } catch (error) {
+            console.error('Error rejecting driver:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
 
-                    // Get driver first to find all keys to delete
-                    const driverData = await redis.get(`driver:id:${id}`);
+    // Delete driver
+    .delete('/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
+        try {
+            const { id } = params;
 
-                    if (!driverData) {
-                        return {
-                            error: 'Driver not found',
-                            status: 404,
-                        };
-                    }
+            // Get driver first to find all keys to delete
+            const driverData = await redis.get(`driver:id:${id}`);
 
-                    const driver: Driver = JSON.parse(driverData);
+            if (!driverData) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
 
-                    // Delete all keys
-                    await redis.del(`driver:${driver.email}`);
-                    await redis.del(`driver:id:${id}`);
-                    await redis.del(`driver:license:${driver.licenseNumber}`);
-                    await redis.del(`driver:plate:${driver.vehiclePlate}`);
+            const driver: Driver = JSON.parse(driverData);
 
-                    // Remove from availability sets
-                    await redis.srem('drivers:offline', id);
-                    await redis.srem('drivers:online_free', id);
-                    await redis.srem('drivers:online_busy', id);
+            // Delete all keys
+            await redis.del(`driver:${driver.email}`);
+            await redis.del(`driver:id:${id}`);
+            await redis.del(`driver:license:${driver.licenseNumber}`);
+            await redis.del(`driver:plate:${driver.vehiclePlate}`);
+            await redis.del(`driver:location:${id}`); // Also delete location data
 
-                    return {
-                        success: true,
-                        message: 'Driver deleted successfully'
-                    };
+            // Remove from availability sets
+            await redis.srem('drivers:offline', id);
+            await redis.srem('drivers:online_free', id);
+            await redis.srem('drivers:online_busy', id);
 
-                } catch (error) {
-                    console.error('Error deleting driver:', error);
-                    return {
-                        error: 'Internal server error',
-                        status: 500,
-                    };
-                }
-            });
+            return {
+                success: true,
+                message: 'Driver deleted successfully'
+            };
+
+        } catch (error) {
+            console.error('Error deleting driver:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    });

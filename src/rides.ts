@@ -205,16 +205,28 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
     // Update ride status
     .put('/:id/status', async ({ params, body, redis }: {
         params: { id: string };
-        body: { status: 'pending' | 'accepted' | 'in_progress' | 'completed' | 'cancelled' };
+        body: { status: 'pending' | 'accepted' | 'driver_assigned' | 'approaching_pickup' | 'driver_arrived' | 'in_progress' | 'completed' | 'cancelled' };
         redis: any;
     }) => {
         try {
             const { id } = params;
             const { status } = body;
 
-            if (!status || !['pending', 'accepted', 'in_progress', 'completed', 'cancelled'].includes(status)) {
+            // ✅ Updated to include all frontend-expected statuses
+            const validStatuses = [
+                'pending',
+                'accepted',
+                'driver_assigned',
+                'approaching_pickup',
+                'driver_arrived',
+                'in_progress',
+                'completed',
+                'cancelled'
+            ];
+
+            if (!status || !validStatuses.includes(status)) {
                 return {
-                    error: 'Invalid status. Must be one of: pending, accepted, in_progress, completed, cancelled',
+                    error: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
                     status: 400,
                 };
             }
@@ -228,10 +240,10 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 };
             }
 
-            const existingRide: Ride = JSON.parse(existingRideData);
+            const existingRide = JSON.parse(existingRideData);
 
             // Update ride
-            const updatedRide: Ride = {
+            const updatedRide = {
                 ...existingRide,
                 status,
                 updatedAt: new Date().toISOString(),
@@ -254,7 +266,239 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
             };
         }
     })
+    .get('/:id/location', async ({ params, redis }: {
+        params: { id: string };
+        redis: any;
+    }) => {
+        try {
+            const { id: driverId } = params;
 
+            // First try to get location from dedicated location storage
+            let locationData = await redis.get(`driver:location:${driverId}`);
+
+            if (!locationData) {
+                // Fallback: get location from driver record
+                const driverData = await redis.get(`driver:id:${driverId}`);
+                if (driverData) {
+                    const driver = JSON.parse(driverData);
+                    if (driver.latitude && driver.longitude) {
+                        locationData = JSON.stringify({
+                            driverId,
+                            latitude: driver.latitude,
+                            longitude: driver.longitude,
+                            timestamp: driver.lastLocationUpdate || new Date().toISOString(),
+                        });
+                    }
+                }
+            }
+
+            if (!locationData) {
+                return {
+                    location: null
+                };
+            }
+
+            const location = JSON.parse(locationData);
+
+            return {
+                location
+            };
+
+        } catch (error) {
+            console.error('Error getting driver location:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // ✅ UPDATED: Get driver by ID - returns simplified interface for frontend
+    .get('/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
+        try {
+            const { id } = params;
+
+            const driverData = await redis.get(`driver:id:${id}`);
+
+            if (!driverData) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
+
+            const fullDriver = JSON.parse(driverData);
+
+            // ✅ Convert to simple driver interface for frontend
+            const driver = {
+                id: fullDriver.id,
+                email: fullDriver.email,
+                username: fullDriver.fullName || fullDriver.email.split('@')[0], // Use fullName or email prefix
+                walletAddress: fullDriver.walletAddress || '', // Add empty string if missing
+                isDriver: fullDriver.status === 'approved', // Driver is active if approved
+                createdAt: fullDriver.createdAt,
+                updatedAt: fullDriver.updatedAt,
+            };
+
+            return { driver };
+
+        } catch (error) {
+            console.error('Error fetching driver:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // ✅ UPDATED: Driver assignment endpoint in rides - returns simplified driver
+    .put('/:id/assign-driver', async ({ params, body, redis }: {
+        params: { id: string };
+        body: { driverId: string; status?: string };
+        redis: any;
+    }) => {
+        try {
+            const { id } = params;
+            const { driverId, status = 'driver_assigned' } = body;
+
+            if (!driverId) {
+                return {
+                    error: 'Driver ID is required',
+                    status: 400,
+                };
+            }
+
+            // Get existing ride
+            const existingRideData = await redis.get(`ride:${id}`);
+            if (!existingRideData) {
+                return {
+                    error: 'Ride not found',
+                    status: 404,
+                };
+            }
+
+            const existingRide = JSON.parse(existingRideData);
+
+            // Check if ride is in pending or accepted status
+            if (!['pending', 'accepted'].includes(existingRide.status)) {
+                return {
+                    error: 'Ride cannot be assigned to driver in current status',
+                    status: 400,
+                };
+            }
+
+            // Get driver info
+            const driverData = await redis.get(`driver:id:${driverId}`);
+            if (!driverData) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
+
+            const fullDriver = JSON.parse(driverData);
+
+            // Update ride with assigned driver
+            const updatedRide = {
+                ...existingRide,
+                assignedDriverId: driverId,
+                status: status,
+                driverAcceptedAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            };
+
+            // Update in Redis
+            const rideJson = JSON.stringify(updatedRide);
+            await redis.set(`ride:${id}`, rideJson);
+
+            // Add ride to driver's assigned rides
+            await redis.sAdd(`driver:rides:${driverId}`, id);
+
+            // ✅ Return simplified driver interface
+            const driver = {
+                id: fullDriver.id,
+                email: fullDriver.email,
+                username: fullDriver.fullName || fullDriver.email.split('@')[0],
+                walletAddress: fullDriver.walletAddress || '',
+                isDriver: fullDriver.status === 'approved',
+                createdAt: fullDriver.createdAt,
+                updatedAt: fullDriver.updatedAt,
+            };
+
+            return {
+                success: true,
+                ride: updatedRide,
+                driver
+            };
+
+        } catch (error) {
+            console.error('Error assigning driver to ride:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // ✅ UPDATED: Get assigned driver - returns simplified interface
+    .get('/:id/driver', async ({ params, redis }: {
+        params: { id: string };
+        redis: any;
+    }) => {
+        try {
+            const { id } = params;
+
+            // Get ride data
+            const rideData = await redis.get(`ride:${id}`);
+            if (!rideData) {
+                return {
+                    error: 'Ride not found',
+                    status: 404,
+                };
+            }
+
+            const ride = JSON.parse(rideData);
+
+            // Check if ride has assigned driver
+            if (!ride.assignedDriverId) {
+                return {
+                    driver: null
+                };
+            }
+
+            // Get driver data
+            const driverData = await redis.get(`driver:id:${ride.assignedDriverId}`);
+            if (!driverData) {
+                return {
+                    driver: null
+                };
+            }
+
+            const fullDriver = JSON.parse(driverData);
+
+            // ✅ Return simplified driver interface
+            const driver = {
+                id: fullDriver.id,
+                email: fullDriver.email,
+                username: fullDriver.fullName || fullDriver.email.split('@')[0],
+                walletAddress: fullDriver.walletAddress || '',
+                isDriver: fullDriver.status === 'approved',
+                createdAt: fullDriver.createdAt,
+                updatedAt: fullDriver.updatedAt,
+            };
+
+            return {
+                driver
+            };
+
+        } catch (error) {
+            console.error('Error getting assigned driver:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
     // Delete ride
     .delete('/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
         try {
@@ -293,4 +537,6 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 status: 500,
             };
         }
+
+
     });
