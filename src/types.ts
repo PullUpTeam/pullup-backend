@@ -50,6 +50,7 @@ export interface FullDriver {
     longitude?: number;
     applicationDate: string;
     approvalDate?: string;
+    rejectionReason?: string;
     createdAt: string;
     updatedAt: string;
     username?: string;

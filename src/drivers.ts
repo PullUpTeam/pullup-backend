@@ -1,6 +1,6 @@
 import { Elysia } from 'elysia';
 import { v4 as uuidv4 } from 'uuid';
-import type {DriverApplicationRequest, Driver, DriverAvailabilityUpdate, DriverUpdateRequest} from "./types.ts";
+import type { DriverApplicationRequest, Driver, FullDriver, DriverAvailabilityUpdate, DriverUpdateRequest, DriverLocation, toSimpleDriver } from "./types.ts";
 
 
 function validateDriverApplication(data: DriverApplicationRequest): string | null {
@@ -34,7 +34,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             const driverData = await redis.get(`driver:${email}`);
 
             if (driverData) {
-                const existingDriver: Driver = JSON.parse(driverData);
+                const existingDriver: FullDriver = JSON.parse(driverData);
                 return {
                     exists: true,
                     driver: existingDriver
@@ -75,7 +75,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const driver: Driver = JSON.parse(driverData);
+            const driver: FullDriver = JSON.parse(driverData);
 
             // Only approved drivers can change availability
             if (driver.status !== 'approved') {
@@ -100,7 +100,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const updatedDriver: Driver = {
+            const updatedDriver: FullDriver = {
                 ...driver,
                 availability,
                 currentRideId: availability === 'online_busy' ? currentRideId : undefined,
@@ -118,13 +118,13 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             await redis.set(`driver:plate:${driver.vehiclePlate}`, driverJson);
 
             // Update availability index for quick lookups
-            await redis.sadd(`drivers:${availability}`, driverId);
+            await redis.sAdd(`drivers:${availability}`, driverId);
 
             // Remove from other availability sets
             const availabilityStates = ['offline', 'online_free', 'online_busy'];
             for (const state of availabilityStates) {
                 if (state !== availability) {
-                    await redis.srem(`drivers:${state}`, driverId);
+                    await redis.sRem(`drivers:${state}`, driverId);
                 }
             }
 
@@ -160,7 +160,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             }
 
             // Get driver IDs from availability set
-            const driverIds = await redis.smembers(`drivers:${status}`);
+            const driverIds = await redis.sMembers(`drivers:${status}`);
 
             if (driverIds.length === 0) {
                 return {
@@ -173,7 +173,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             const drivers = await Promise.all(
                 driverIds.map(async (id: string) => {
                     const driverData = await redis.get(`driver:id:${id}`);
-                    return driverData ? JSON.parse(driverData) : null;
+                    return driverData ? JSON.parse(driverData) as FullDriver : null;
                 })
             );
 
@@ -185,24 +185,24 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 const userLng = parseFloat(longitude);
                 const radiusKm = parseFloat(radius);
 
-                filteredDrivers = filteredDrivers.filter((driver: Driver) => {
+                filteredDrivers = filteredDrivers.filter((driver: FullDriver) => {
                     if (!driver.latitude || !driver.longitude) return false;
 
                     // Calculate distance using Haversine formula
                     const R = 6371; // Earth's radius in km
                     const dLat = (driver.latitude - userLat) * Math.PI / 180;
                     const dLng = (driver.longitude - userLng) * Math.PI / 180;
-                    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
                         Math.cos(userLat * Math.PI / 180) * Math.cos(driver.latitude * Math.PI / 180) *
-                        Math.sin(dLng/2) * Math.sin(dLng/2);
-                    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                        Math.sin(dLng / 2) * Math.sin(dLng / 2);
+                    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
                     const distance = R * c;
 
                     return distance <= radiusKm;
                 });
 
                 // Sort by distance
-                filteredDrivers.sort((a: Driver, b: Driver) => {
+                filteredDrivers.sort((a: FullDriver, b: FullDriver) => {
                     if (!a.latitude || !a.longitude || !b.latitude || !b.longitude) return 0;
 
                     const distanceA = Math.sqrt(
@@ -254,7 +254,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const driver: Driver = JSON.parse(driverData);
+            const driver: FullDriver = JSON.parse(driverData);
 
             if (driver.availability !== 'online_free') {
                 return {
@@ -263,7 +263,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const updatedDriver: Driver = {
+            const updatedDriver: FullDriver = {
                 ...driver,
                 availability: 'online_busy',
                 currentRideId: rideId,
@@ -281,8 +281,8 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             await redis.set(`driver:plate:${driver.vehiclePlate}`, driverJson);
 
             // Update availability sets
-            await redis.sadd('drivers:online_busy', driverId);
-            await redis.srem('drivers:online_free', driverId);
+            await redis.sAdd('drivers:online_busy', driverId);
+            await redis.sRem('drivers:online_free', driverId);
 
             return {
                 success: true,
@@ -319,7 +319,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const driver: Driver = JSON.parse(driverData);
+            const driver: FullDriver = JSON.parse(driverData);
 
             if (driver.availability !== 'online_busy' || driver.currentRideId !== rideId) {
                 return {
@@ -328,7 +328,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const updatedDriver: Driver = {
+            const updatedDriver: FullDriver = {
                 ...driver,
                 availability: 'online_free',
                 currentRideId: undefined,
@@ -346,8 +346,8 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             await redis.set(`driver:plate:${driver.vehiclePlate}`, driverJson);
 
             // Update availability sets
-            await redis.sadd('drivers:online_free', driverId);
-            await redis.srem('drivers:online_busy', driverId);
+            await redis.sAdd('drivers:online_free', driverId);
+            await redis.sRem('drivers:online_busy', driverId);
 
             return {
                 success: true,
@@ -368,9 +368,9 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
     .get('/stats/availability', async ({ redis }: { redis: any }) => {
         try {
             const [offline, onlineFree, onlineBusy] = await Promise.all([
-                redis.scard('drivers:offline'),
-                redis.scard('drivers:online_free'),
-                redis.scard('drivers:online_busy')
+                redis.sCard('drivers:offline'),
+                redis.sCard('drivers:online_free'),
+                redis.sCard('drivers:online_busy')
             ]);
 
             return {
@@ -437,7 +437,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             const now = new Date().toISOString();
 
             // ✅ Updated to include missing fields for frontend compatibility
-            const newDriver = {
+            const newDriver: FullDriver = {
                 id: driverId,
                 fullName: applicationData.fullName,
                 email: applicationData.email,
@@ -456,7 +456,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 // ✅ Add missing fields for frontend compatibility
                 username: applicationData.fullName,
                 walletAddress: '', // Will be updated later when driver connects wallet
-                isDriver: false, // Will be true when approved
+                isDriver: true, // Will be true when approved
             };
 
             // Store driver in Redis with multiple keys for different lookups
@@ -467,15 +467,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             await redis.set(`driver:plate:${applicationData.vehiclePlate}`, driverJson);
 
             // ✅ Return simplified driver interface for frontend
-            const responseDriver = {
-                id: newDriver.id,
-                email: newDriver.email,
-                username: newDriver.fullName,
-                walletAddress: newDriver.walletAddress,
-                isDriver: newDriver.status === 'approved',
-                createdAt: newDriver.createdAt,
-                updatedAt: newDriver.updatedAt,
-            };
+            const responseDriver: Driver = toSimpleDriver(newDriver);
 
             return {
                 success: true,
@@ -513,7 +505,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const existingDriver: Driver = JSON.parse(existingDriverData);
+            const existingDriver: FullDriver = JSON.parse(existingDriverData);
 
             // If email is being updated, check for conflicts
             if (updateData.email && updateData.email !== existingDriver.email) {
@@ -549,7 +541,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             }
 
             // Update driver
-            const updatedDriver: Driver = {
+            const updatedDriver: FullDriver = {
                 ...existingDriver,
                 ...updateData,
                 updatedAt: new Date().toISOString(),
@@ -610,18 +602,10 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const fullDriver = JSON.parse(driverData);
+            const fullDriver: FullDriver = JSON.parse(driverData);
 
             // ✅ Convert to simplified driver interface for frontend
-            const driver = {
-                id: fullDriver.id,
-                email: fullDriver.email,
-                username: fullDriver.fullName || fullDriver.username || fullDriver.email.split('@')[0],
-                walletAddress: fullDriver.walletAddress || '',
-                isDriver: fullDriver.status === 'approved',
-                createdAt: fullDriver.createdAt,
-                updatedAt: fullDriver.updatedAt,
-            };
+            const driver: Driver = toSimpleDriver(fullDriver);
 
             return { driver };
 
@@ -649,7 +633,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 // Fallback: get location from driver record
                 const driverData = await redis.get(`driver:id:${driverId}`);
                 if (driverData) {
-                    const driver = JSON.parse(driverData);
+                    const driver: FullDriver = JSON.parse(driverData);
                     if (driver.latitude && driver.longitude) {
                         locationData = JSON.stringify({
                             driverId,
@@ -731,8 +715,8 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             await redis.expire(`driver:location:${driverId}`, 600); // 10 minutes
 
             // Also update the driver record with latest location
-            const driver = JSON.parse(driverData);
-            const updatedDriver = {
+            const driver: FullDriver = JSON.parse(driverData);
+            const updatedDriver: FullDriver = {
                 ...driver,
                 latitude,
                 longitude,
@@ -787,10 +771,10 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const existingDriver = JSON.parse(existingDriverData);
+            const existingDriver: FullDriver = JSON.parse(existingDriverData);
 
             // Update driver with wallet address
-            const updatedDriver = {
+            const updatedDriver: FullDriver = {
                 ...existingDriver,
                 walletAddress,
                 updatedAt: new Date().toISOString(),
@@ -804,15 +788,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             await redis.set(`driver:plate:${existingDriver.vehiclePlate}`, driverJson);
 
             // ✅ Return simplified driver interface
-            const responseDriver = {
-                id: updatedDriver.id,
-                email: updatedDriver.email,
-                username: updatedDriver.fullName || updatedDriver.username,
-                walletAddress: updatedDriver.walletAddress,
-                isDriver: updatedDriver.status === 'approved',
-                createdAt: updatedDriver.createdAt,
-                updatedAt: updatedDriver.updatedAt,
-            };
+            const responseDriver: Driver = toSimpleDriver(updatedDriver);
 
             return {
                 success: true,
@@ -979,7 +955,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const driver: Driver = JSON.parse(driverData);
+            const driver: FullDriver = JSON.parse(driverData);
 
             if (driver.status === 'approved') {
                 return {
@@ -988,7 +964,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const updatedDriver: Driver = {
+            const updatedDriver: FullDriver = {
                 ...driver,
                 status: 'approved',
                 approvalDate: new Date().toISOString(),
@@ -1003,7 +979,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             await redis.set(`driver:plate:${driver.vehiclePlate}`, driverJson);
 
             // Add to offline availability set when approved
-            await redis.sadd('drivers:offline', id);
+            await redis.sAdd('drivers:offline', id);
 
             return {
                 success: true,
@@ -1035,9 +1011,9 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const driver: Driver = JSON.parse(driverData);
+            const driver: FullDriver = JSON.parse(driverData);
 
-            const updatedDriver: Driver = {
+            const updatedDriver: FullDriver = {
                 ...driver,
                 status: 'rejected',
                 updatedAt: new Date().toISOString(),
@@ -1081,7 +1057,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const driver: Driver = JSON.parse(driverData);
+            const driver: FullDriver = JSON.parse(driverData);
 
             // Delete all keys
             await redis.del(`driver:${driver.email}`);
@@ -1091,9 +1067,9 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             await redis.del(`driver:location:${id}`); // Also delete location data
 
             // Remove from availability sets
-            await redis.srem('drivers:offline', id);
-            await redis.srem('drivers:online_free', id);
-            await redis.srem('drivers:online_busy', id);
+            await redis.sRem('drivers:offline', id);
+            await redis.sRem('drivers:online_free', id);
+            await redis.sRem('drivers:online_busy', id);
 
             return {
                 success: true,
