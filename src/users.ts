@@ -26,9 +26,33 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
 
             if (userData) {
                 const existingUser: User = JSON.parse(userData);
+                
+                // ✅ NEW: Check if user is also a driver and include driver info
+                let driverId = null;
+                let isDriver = existingUser.isDriver || false;
+                
+                try {
+                    const driverData = await redis.get(`driver:${email}`);
+                    if (driverData) {
+                        const driver = JSON.parse(driverData);
+                        if (driver.status === 'approved') {
+                            isDriver = true;
+                            driverId = driver.id;
+                        }
+                    }
+                } catch (driverError) {
+                    console.log('No driver record found for user:', email);
+                }
+                
+                const userWithDriverInfo = {
+                    ...existingUser,
+                    isDriver,
+                    driverId, // Include driver ID for frontend use
+                };
+                
                 return {
                     exists: true,
-                    user: existingUser
+                    user: userWithDriverInfo
                 };
             }
 

@@ -3,6 +3,8 @@ export interface User {
     email: string;
     username: string;
     walletAddress?: string;
+    isDriver?: boolean;
+    driverId?: string; // Driver ID if user is an approved driver
     createdAt: string;
     updatedAt: string;
 }

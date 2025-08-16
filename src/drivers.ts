@@ -548,6 +548,32 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 ...(updateData.status === 'approved' && !existingDriver.approvalDate ? { approvalDate: new Date().toISOString() } : {}),
             };
 
+            // ✅ NEW: When driver is approved, update the corresponding user's isDriver field
+            if (updateData.status === 'approved' && existingDriver.status !== 'approved') {
+                try {
+                    // Get the user record
+                    const userData = await redis.get(`user:${existingDriver.email}`);
+                    if (userData) {
+                        const user = JSON.parse(userData);
+                        const updatedUser = {
+                            ...user,
+                            isDriver: true,
+                            updatedAt: new Date().toISOString(),
+                        };
+                        
+                        // Update user record
+                        const userJson = JSON.stringify(updatedUser);
+                        await redis.set(`user:${existingDriver.email}`, userJson);
+                        await redis.set(`user:id:${user.id}`, userJson);
+                        
+                        console.log(`✅ Updated user ${existingDriver.email} isDriver status to true`);
+                    }
+                } catch (error) {
+                    console.error('❌ Failed to update user isDriver status:', error);
+                    // Don't fail the driver update if user update fails
+                }
+            }
+
             // Update in Redis - remove old keys if email, license, or plate changed
             const driverJson = JSON.stringify(updatedDriver);
 
@@ -818,11 +844,15 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const driver: Driver = JSON.parse(driverData);
+            const fullDriver: FullDriver = JSON.parse(driverData);
+            
+            // ✅ Convert to simplified driver interface for frontend
+            const driver: Driver = toSimpleDriver(fullDriver);
+            
             return { driver };
 
         } catch (error) {
-            console.error('Error fetching driver:', error);
+            console.error('Error fetching driver by email:', error);
             return {
                 error: 'Internal server error',
                 status: 500,
