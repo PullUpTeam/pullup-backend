@@ -9,13 +9,13 @@ import { driverRoutes } from "./drivers.ts";
 await initDatabase();
 console.log('✅ Database connected successfully');
 
-const clients = new Set<WebSocket>();
+const clients = new Set<any>();
 
 // Broadcast helper for WebSocket
 function broadcastToClients(message: string) {
     console.log('📡 Broadcasting to WebSocket clients:', message);
     for (const client of clients) {
-        if (client.readyState === client.OPEN) {
+        if (client.readyState === 1) { // 1 = OPEN
             client.send(message);
         }
     }
@@ -38,9 +38,9 @@ const app = new Elysia()
     .get('/test-db', async ({ db }) => {
         try {
             const result = await db`SELECT NOW() as time`;
-            return { success: true, time: result[0].time, message: 'Database is working!' };
-        } catch (error) {
-            return { success: false, error: error.message };
+            return { success: true, time: result[0]!.time, message: 'Database is working!' };
+        } catch (error: any) {
+            return { success: false, error: error?.message || 'Unknown error' };
         }
     })
 

@@ -3,6 +3,26 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Ride, Coordinates } from './types';
 import type { Sql } from 'postgres';
 
+function mapRowToRide(row: any): Ride {
+    return {
+        id: row.id,
+        userId: row.user_id,
+        userEmail: row.user_email,
+        walletAddress: row.wallet_address,
+        originCoordinates: { latitude: row.origin_lat, longitude: row.origin_lng },
+        destinationCoordinates: { latitude: row.destination_lat, longitude: row.destination_lng },
+        originAddress: row.origin_address,
+        destinationAddress: row.destination_address,
+        estimatedPrice: row.estimated_price,
+        customPrice: row.custom_price,
+        status: row.status,
+        assignedDriverId: row.assigned_driver_id,
+        driverAcceptedAt: row.driver_accepted_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
 export const rideRoutes = new Elysia({ prefix: '/api/rides' })
     // Create new ride
     .post('/create', async ({ body, db }: {
@@ -118,25 +138,7 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 };
             }
 
-            const row = rides[0];
-            const ride: Ride = {
-                id: row.id,
-                userId: row.user_id,
-                userEmail: row.user_email,
-                walletAddress: row.wallet_address,
-                originCoordinates: { latitude: row.origin_lat, longitude: row.origin_lng },
-                destinationCoordinates: { latitude: row.destination_lat, longitude: row.destination_lng },
-                originAddress: row.origin_address,
-                destinationAddress: row.destination_address,
-                estimatedPrice: row.estimated_price,
-                customPrice: row.custom_price,
-                status: row.status,
-                assignedDriverId: row.assigned_driver_id,
-                driverAcceptedAt: row.driver_accepted_at,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            };
-
+            const ride = mapRowToRide(rides[0]!);
             return { ride };
 
         } catch (error) {
@@ -159,24 +161,7 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 ORDER BY created_at DESC
             `;
 
-            const rides: Ride[] = results.map(row => ({
-                id: row.id,
-                userId: row.user_id,
-                userEmail: row.user_email,
-                walletAddress: row.wallet_address,
-                originCoordinates: { latitude: row.origin_lat, longitude: row.origin_lng },
-                destinationCoordinates: { latitude: row.destination_lat, longitude: row.destination_lng },
-                originAddress: row.origin_address,
-                destinationAddress: row.destination_address,
-                estimatedPrice: row.estimated_price,
-                customPrice: row.custom_price,
-                status: row.status,
-                assignedDriverId: row.assigned_driver_id,
-                driverAcceptedAt: row.driver_accepted_at,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            }));
-
+            const rides: Ride[] = results.map(mapRowToRide);
             return { rides };
 
         } catch (error) {
@@ -211,26 +196,10 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 `;
             }
 
-            const rides: Ride[] = results.map(row => ({
-                id: row.id,
-                userId: row.user_id,
-                userEmail: row.user_email,
-                walletAddress: row.wallet_address,
-                originCoordinates: { latitude: row.origin_lat, longitude: row.origin_lng },
-                destinationCoordinates: { latitude: row.destination_lat, longitude: row.destination_lng },
-                originAddress: row.origin_address,
-                destinationAddress: row.destination_address,
-                estimatedPrice: row.estimated_price,
-                customPrice: row.custom_price,
-                status: row.status,
-                assignedDriverId: row.assigned_driver_id,
-                driverAcceptedAt: row.driver_accepted_at,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            }));
+            const rides: Ride[] = results.map(mapRowToRide);
 
             const totalResult = await db`SELECT COUNT(*) as count FROM rides`;
-            const total = parseInt(totalResult[0].count);
+            const total = parseInt(totalResult[0]!.count as string);
 
             return {
                 rides,
@@ -285,25 +254,7 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 };
             }
 
-            const row = result[0];
-            const updatedRide: Ride = {
-                id: row.id,
-                userId: row.user_id,
-                userEmail: row.user_email,
-                walletAddress: row.wallet_address,
-                originCoordinates: { latitude: row.origin_lat, longitude: row.origin_lng },
-                destinationCoordinates: { latitude: row.destination_lat, longitude: row.destination_lng },
-                originAddress: row.origin_address,
-                destinationAddress: row.destination_address,
-                estimatedPrice: row.estimated_price,
-                customPrice: row.custom_price,
-                status: row.status,
-                assignedDriverId: row.assigned_driver_id,
-                driverAcceptedAt: row.driver_accepted_at,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            };
-
+            const updatedRide = mapRowToRide(result[0]!);
             return {
                 success: true,
                 ride: updatedRide
@@ -347,7 +298,7 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 };
             }
 
-            const existingRide = rides[0];
+            const existingRide = rides[0]!;
 
             if (!['pending', 'accepted'].includes(existingRide.status)) {
                 return {
@@ -368,7 +319,7 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 };
             }
 
-            const fullDriver = drivers[0];
+            const fullDriver = drivers[0]!;
             const now = new Date().toISOString();
 
             // Update ride
@@ -383,24 +334,7 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 RETURNING *
             `;
 
-            const row = result[0];
-            const updatedRide: Ride = {
-                id: row.id,
-                userId: row.user_id,
-                userEmail: row.user_email,
-                walletAddress: row.wallet_address,
-                originCoordinates: { latitude: row.origin_lat, longitude: row.origin_lng },
-                destinationCoordinates: { latitude: row.destination_lat, longitude: row.destination_lng },
-                originAddress: row.origin_address,
-                destinationAddress: row.destination_address,
-                estimatedPrice: row.estimated_price,
-                customPrice: row.custom_price,
-                status: row.status,
-                assignedDriverId: row.assigned_driver_id,
-                driverAcceptedAt: row.driver_accepted_at,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            };
+            const updatedRide = mapRowToRide(result[0]!);
 
             const driver = {
                 id: fullDriver.id,
@@ -447,7 +381,7 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 };
             }
 
-            const ride = rides[0];
+            const ride = rides[0]!;
 
             if (!ride.assigned_driver_id) {
                 return { driver: null };
@@ -462,7 +396,7 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 return { driver: null };
             }
 
-            const fullDriver = drivers[0];
+            const fullDriver = drivers[0]!;
             const driver = {
                 id: fullDriver.id,
                 email: fullDriver.email,
@@ -505,13 +439,13 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                     WHERE id = ${driverId}
                 `;
 
-                if (drivers.length > 0 && drivers[0].latitude && drivers[0].longitude) {
+                if (drivers.length > 0 && drivers[0]!.latitude && drivers[0]!.longitude) {
                     return {
                         location: {
                             driverId,
-                            latitude: drivers[0].latitude,
-                            longitude: drivers[0].longitude,
-                            timestamp: drivers[0].last_location_update || new Date().toISOString(),
+                            latitude: drivers[0]!.latitude,
+                            longitude: drivers[0]!.longitude,
+                            timestamp: drivers[0]!.last_location_update || new Date().toISOString(),
                         }
                     };
                 }
@@ -519,7 +453,7 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 return { location: null };
             }
 
-            const loc = locations[0];
+            const loc = locations[0]!;
             return {
                 location: {
                     driverId: loc.driver_id,

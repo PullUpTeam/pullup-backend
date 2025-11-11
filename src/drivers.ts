@@ -3,6 +3,47 @@ import { v4 as uuidv4 } from 'uuid';
 import type { DriverApplicationRequest, Driver, FullDriver, DriverAvailabilityUpdate, DriverUpdateRequest, DriverLocation, toSimpleDriver } from "./types.ts";
 import type { Sql } from 'postgres';
 
+function mapRowToFullDriver(row: any): FullDriver {
+    return {
+        id: row.id,
+        fullName: row.full_name,
+        email: row.email,
+        phoneNumber: row.phone_number,
+        address: row.address,
+        licenseNumber: row.license_number,
+        vehicleModel: row.vehicle_model,
+        vehicleYear: row.vehicle_year,
+        vehiclePlate: row.vehicle_plate,
+        motivation: row.motivation,
+        status: row.status,
+        availability: row.availability,
+        currentRideId: row.current_ride_id,
+        lastLocationUpdate: row.last_location_update,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        applicationDate: row.application_date,
+        approvalDate: row.approval_date,
+        rejectionReason: row.rejection_reason,
+        username: row.username,
+        walletAddress: row.wallet_address,
+        isDriver: row.is_driver,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
+function mapRowToDriver(row: any): Driver {
+    return {
+        id: row.id,
+        email: row.email,
+        username: row.full_name || row.username,
+        walletAddress: row.wallet_address || '',
+        isDriver: row.status === 'approved',
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
 function validateDriverApplication(data: DriverApplicationRequest): string | null {
     if (!data.fullName?.trim()) return 'Full name is required';
     if (!data.email?.trim()) return 'Email is required';
@@ -35,34 +76,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             `;
 
             if (drivers.length > 0) {
-                const row = drivers[0];
-                const existingDriver: FullDriver = {
-                    id: row.id,
-                    fullName: row.full_name,
-                    email: row.email,
-                    phoneNumber: row.phone_number,
-                    address: row.address,
-                    licenseNumber: row.license_number,
-                    vehicleModel: row.vehicle_model,
-                    vehicleYear: row.vehicle_year,
-                    vehiclePlate: row.vehicle_plate,
-                    motivation: row.motivation,
-                    status: row.status,
-                    availability: row.availability,
-                    currentRideId: row.current_ride_id,
-                    lastLocationUpdate: row.last_location_update,
-                    latitude: row.latitude,
-                    longitude: row.longitude,
-                    applicationDate: row.application_date,
-                    approvalDate: row.approval_date,
-                    rejectionReason: row.rejection_reason,
-                    username: row.username,
-                    walletAddress: row.wallet_address,
-                    isDriver: row.is_driver,
-                    createdAt: row.created_at,
-                    updatedAt: row.updated_at,
-                };
-                
+                const existingDriver = mapRowToFullDriver(drivers[0]!);
                 return {
                     exists: true,
                     driver: existingDriver
@@ -202,7 +216,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const existingDriver = existing[0];
+            const existingDriver = existing[0]!;
 
             // Check for conflicts
             if (updateData.email && updateData.email !== existingDriver.email) {
@@ -277,34 +291,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 }
             }
 
-            const row = result[0];
-            const updatedDriver: FullDriver = {
-                id: row.id,
-                fullName: row.full_name,
-                email: row.email,
-                phoneNumber: row.phone_number,
-                address: row.address,
-                licenseNumber: row.license_number,
-                vehicleModel: row.vehicle_model,
-                vehicleYear: row.vehicle_year,
-                vehiclePlate: row.vehicle_plate,
-                motivation: row.motivation,
-                status: row.status,
-                availability: row.availability,
-                currentRideId: row.current_ride_id,
-                lastLocationUpdate: row.last_location_update,
-                latitude: row.latitude,
-                longitude: row.longitude,
-                applicationDate: row.application_date,
-                approvalDate: row.approval_date,
-                rejectionReason: row.rejection_reason,
-                username: row.username,
-                walletAddress: row.wallet_address,
-                isDriver: row.is_driver,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            };
-
+            const updatedDriver = mapRowToFullDriver(result[0]!);
             return {
                 success: true,
                 driver: updatedDriver
@@ -335,17 +322,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const row = drivers[0];
-            const driver: Driver = {
-                id: row.id,
-                email: row.email,
-                username: row.full_name,
-                walletAddress: row.wallet_address || '',
-                isDriver: row.status === 'approved',
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            };
-
+            const driver = mapRowToDriver(drivers[0]!);
             return { driver };
 
         } catch (error) {
@@ -381,7 +358,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const driver = drivers[0];
+            const driver = drivers[0]!;
 
             if (driver.status !== 'approved') {
                 return {
@@ -406,47 +383,34 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
             }
 
             const now = new Date().toISOString();
+            const rideIdValue = availability === 'online_busy' ? (currentRideId || null) : null;
 
-            const result = await db`
-                UPDATE drivers SET
-                    availability = ${availability},
-                    current_ride_id = ${availability === 'online_busy' ? currentRideId : null},
-                    ${latitude !== undefined ? db`latitude = ${latitude},` : db``}
-                    ${longitude !== undefined ? db`longitude = ${longitude},` : db``}
-                    last_location_update = ${now},
-                    updated_at = ${now}
-                WHERE id = ${driverId}
-                RETURNING *
-            `;
+            let result;
+            if (latitude !== undefined && longitude !== undefined) {
+                result = await db`
+                    UPDATE drivers SET
+                        availability = ${availability},
+                        current_ride_id = ${rideIdValue},
+                        latitude = ${latitude},
+                        longitude = ${longitude},
+                        last_location_update = ${now},
+                        updated_at = ${now}
+                    WHERE id = ${driverId}
+                    RETURNING *
+                `;
+            } else {
+                result = await db`
+                    UPDATE drivers SET
+                        availability = ${availability},
+                        current_ride_id = ${rideIdValue},
+                        last_location_update = ${now},
+                        updated_at = ${now}
+                    WHERE id = ${driverId}
+                    RETURNING *
+                `;
+            }
 
-            const row = result[0];
-            const updatedDriver: FullDriver = {
-                id: row.id,
-                fullName: row.full_name,
-                email: row.email,
-                phoneNumber: row.phone_number,
-                address: row.address,
-                licenseNumber: row.license_number,
-                vehicleModel: row.vehicle_model,
-                vehicleYear: row.vehicle_year,
-                vehiclePlate: row.vehicle_plate,
-                motivation: row.motivation,
-                status: row.status,
-                availability: row.availability,
-                currentRideId: row.current_ride_id,
-                lastLocationUpdate: row.last_location_update,
-                latitude: row.latitude,
-                longitude: row.longitude,
-                applicationDate: row.application_date,
-                approvalDate: row.approval_date,
-                rejectionReason: row.rejection_reason,
-                username: row.username,
-                walletAddress: row.wallet_address,
-                isDriver: row.is_driver,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            };
-
+            const updatedDriver = mapRowToFullDriver(result[0]!);
             return {
                 success: true,
                 driver: updatedDriver
@@ -512,33 +476,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 `;
             }
 
-            const fullDrivers: FullDriver[] = drivers.map(row => ({
-                id: row.id,
-                fullName: row.full_name,
-                email: row.email,
-                phoneNumber: row.phone_number,
-                address: row.address,
-                licenseNumber: row.license_number,
-                vehicleModel: row.vehicle_model,
-                vehicleYear: row.vehicle_year,
-                vehiclePlate: row.vehicle_plate,
-                motivation: row.motivation,
-                status: row.status,
-                availability: row.availability,
-                currentRideId: row.current_ride_id,
-                lastLocationUpdate: row.last_location_update,
-                latitude: row.latitude,
-                longitude: row.longitude,
-                applicationDate: row.application_date,
-                approvalDate: row.approval_date,
-                rejectionReason: row.rejection_reason,
-                username: row.username,
-                walletAddress: row.wallet_address,
-                isDriver: row.is_driver,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            }));
-
+            const fullDrivers = drivers.map(mapRowToFullDriver);
             return {
                 drivers: fullDrivers,
                 count: fullDrivers.length
@@ -574,13 +512,13 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                     WHERE id = ${driverId}
                 `;
 
-                if (drivers.length > 0 && drivers[0].latitude && drivers[0].longitude) {
+                if (drivers.length > 0 && drivers[0]!.latitude && drivers[0]!.longitude) {
                     return {
                         location: {
                             driverId,
-                            latitude: drivers[0].latitude,
-                            longitude: drivers[0].longitude,
-                            timestamp: drivers[0].last_location_update || new Date().toISOString(),
+                            latitude: drivers[0]!.latitude,
+                            longitude: drivers[0]!.longitude,
+                            timestamp: drivers[0]!.last_location_update || new Date().toISOString(),
                         }
                     };
                 }
@@ -588,7 +526,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 return { location: null };
             }
 
-            const loc = locations[0];
+            const loc = locations[0]!;
             return {
                 location: {
                     driverId: loc.driver_id,
@@ -729,17 +667,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const row = result[0];
-            const driver: Driver = {
-                id: row.id,
-                email: row.email,
-                username: row.full_name,
-                walletAddress: row.wallet_address,
-                isDriver: row.status === 'approved',
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            };
-
+            const driver = mapRowToDriver(result[0]!);
             return {
                 success: true,
                 driver
@@ -780,7 +708,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const driver = drivers[0];
+            const driver = drivers[0]!;
 
             if (driver.availability !== 'online_free') {
                 return {
@@ -803,34 +731,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 RETURNING *
             `;
 
-            const row = result[0];
-            const updatedDriver: FullDriver = {
-                id: row.id,
-                fullName: row.full_name,
-                email: row.email,
-                phoneNumber: row.phone_number,
-                address: row.address,
-                licenseNumber: row.license_number,
-                vehicleModel: row.vehicle_model,
-                vehicleYear: row.vehicle_year,
-                vehiclePlate: row.vehicle_plate,
-                motivation: row.motivation,
-                status: row.status,
-                availability: row.availability,
-                currentRideId: row.current_ride_id,
-                lastLocationUpdate: row.last_location_update,
-                latitude: row.latitude,
-                longitude: row.longitude,
-                applicationDate: row.application_date,
-                approvalDate: row.approval_date,
-                rejectionReason: row.rejection_reason,
-                username: row.username,
-                walletAddress: row.wallet_address,
-                isDriver: row.is_driver,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            };
-
+            const updatedDriver = mapRowToFullDriver(result[0]!);
             return {
                 success: true,
                 driver: updatedDriver,
@@ -872,7 +773,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const driver = drivers[0];
+            const driver = drivers[0]!;
 
             if (driver.availability !== 'online_busy' || driver.current_ride_id !== rideId) {
                 return {
@@ -895,34 +796,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 RETURNING *
             `;
 
-            const row = result[0];
-            const updatedDriver: FullDriver = {
-                id: row.id,
-                fullName: row.full_name,
-                email: row.email,
-                phoneNumber: row.phone_number,
-                address: row.address,
-                licenseNumber: row.license_number,
-                vehicleModel: row.vehicle_model,
-                vehicleYear: row.vehicle_year,
-                vehiclePlate: row.vehicle_plate,
-                motivation: row.motivation,
-                status: row.status,
-                availability: row.availability,
-                currentRideId: row.current_ride_id,
-                lastLocationUpdate: row.last_location_update,
-                latitude: row.latitude,
-                longitude: row.longitude,
-                applicationDate: row.application_date,
-                approvalDate: row.approval_date,
-                rejectionReason: row.rejection_reason,
-                username: row.username,
-                walletAddress: row.wallet_address,
-                isDriver: row.is_driver,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            };
-
+            const updatedDriver = mapRowToFullDriver(result[0]!);
             return {
                 success: true,
                 driver: updatedDriver,
@@ -956,9 +830,10 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 total: 0
             };
 
-            stats.forEach(row => {
-                availability[row.availability] = parseInt(row.count);
-                availability.total += parseInt(row.count);
+            stats.forEach((row: any) => {
+                const status = row.availability as 'offline' | 'online_free' | 'online_busy';
+                availability[status] = parseInt(row.count as string);
+                availability.total += parseInt(row.count as string);
             });
 
             return { availability };
@@ -1004,34 +879,8 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 `;
             }
 
-            const fullDrivers: FullDriver[] = drivers.map(row => ({
-                id: row.id,
-                fullName: row.full_name,
-                email: row.email,
-                phoneNumber: row.phone_number,
-                address: row.address,
-                licenseNumber: row.license_number,
-                vehicleModel: row.vehicle_model,
-                vehicleYear: row.vehicle_year,
-                vehiclePlate: row.vehicle_plate,
-                motivation: row.motivation,
-                status: row.status,
-                availability: row.availability,
-                currentRideId: row.current_ride_id,
-                lastLocationUpdate: row.last_location_update,
-                latitude: row.latitude,
-                longitude: row.longitude,
-                applicationDate: row.application_date,
-                approvalDate: row.approval_date,
-                rejectionReason: row.rejection_reason,
-                username: row.username,
-                walletAddress: row.wallet_address,
-                isDriver: row.is_driver,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            }));
-
-            const total = parseInt(totalResult[0].count);
+            const fullDrivers = drivers.map(mapRowToFullDriver);
+            const total = parseInt(totalResult[0]!.count as string);
 
             return {
                 drivers: fullDrivers,
@@ -1068,7 +917,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 };
             }
 
-            const driver = drivers[0];
+            const driver = drivers[0]!;
 
             if (driver.status === 'approved') {
                 return {
@@ -1086,34 +935,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 RETURNING *
             `;
 
-            const row = result[0];
-            const updatedDriver: FullDriver = {
-                id: row.id,
-                fullName: row.full_name,
-                email: row.email,
-                phoneNumber: row.phone_number,
-                address: row.address,
-                licenseNumber: row.license_number,
-                vehicleModel: row.vehicle_model,
-                vehicleYear: row.vehicle_year,
-                vehiclePlate: row.vehicle_plate,
-                motivation: row.motivation,
-                status: row.status,
-                availability: row.availability,
-                currentRideId: row.current_ride_id,
-                lastLocationUpdate: row.last_location_update,
-                latitude: row.latitude,
-                longitude: row.longitude,
-                applicationDate: row.application_date,
-                approvalDate: row.approval_date,
-                rejectionReason: row.rejection_reason,
-                username: row.username,
-                walletAddress: row.wallet_address,
-                isDriver: row.is_driver,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            };
-
+            const updatedDriver = mapRowToFullDriver(result[0]!);
             return {
                 success: true,
                 driver: updatedDriver,
@@ -1162,34 +984,7 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
                 RETURNING *
             `;
 
-            const row = result[0];
-            const updatedDriver: FullDriver = {
-                id: row.id,
-                fullName: row.full_name,
-                email: row.email,
-                phoneNumber: row.phone_number,
-                address: row.address,
-                licenseNumber: row.license_number,
-                vehicleModel: row.vehicle_model,
-                vehicleYear: row.vehicle_year,
-                vehiclePlate: row.vehicle_plate,
-                motivation: row.motivation,
-                status: row.status,
-                availability: row.availability,
-                currentRideId: row.current_ride_id,
-                lastLocationUpdate: row.last_location_update,
-                latitude: row.latitude,
-                longitude: row.longitude,
-                applicationDate: row.application_date,
-                approvalDate: row.approval_date,
-                rejectionReason: row.rejection_reason,
-                username: row.username,
-                walletAddress: row.wallet_address,
-                isDriver: row.is_driver,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-            };
-
+            const updatedDriver = mapRowToFullDriver(result[0]!);
             return {
                 success: true,
                 driver: updatedDriver,

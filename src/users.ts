@@ -4,7 +4,7 @@ import type { User } from './types';
 import type { Sql } from 'postgres';
 
 export function createUsernameFromEmail(email: string): string {
-    const username = email.split('@')[0];
+    const username = email.split('@')[0] || 'user';
     return username.replace(/[^a-zA-Z0-9._]/g, '').toLowerCase();
 }
 
@@ -27,7 +27,7 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
             `;
 
             if (users.length > 0) {
-                const existingUser = users[0];
+                const existingUser = users[0]!;
                 
                 // Check if user is also a driver
                 let driverId = null;
@@ -37,9 +37,9 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
                     const drivers = await db`
                         SELECT id, status FROM drivers WHERE email = ${email}
                     `;
-                    if (drivers.length > 0 && drivers[0].status === 'approved') {
+                    if (drivers.length > 0 && drivers[0]!.status === 'approved') {
                         isDriver = true;
-                        driverId = drivers[0].id;
+                        driverId = drivers[0]!.id;
                     }
                 } catch (driverError) {
                     console.log('No driver record found for user:', email);
@@ -172,15 +172,16 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
                 SELECT * FROM users WHERE email = ${email}
             `;
 
+            const row = updated[0]!;
             const updatedUser: User = {
-                id: updated[0].id,
-                email: updated[0].email,
-                username: updated[0].username,
-                walletAddress: updated[0].wallet_address,
-                isDriver: updated[0].is_driver,
-                driverId: updated[0].driver_id,
-                createdAt: updated[0].created_at,
-                updatedAt: updated[0].updated_at,
+                id: row.id,
+                email: row.email,
+                username: row.username,
+                walletAddress: row.wallet_address,
+                isDriver: row.is_driver,
+                driverId: row.driver_id,
+                createdAt: row.created_at,
+                updatedAt: row.updated_at,
             };
 
             return {
@@ -213,15 +214,16 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
                 };
             }
 
+            const row = users[0]!;
             const user: User = {
-                id: users[0].id,
-                email: users[0].email,
-                username: users[0].username,
-                walletAddress: users[0].wallet_address,
-                isDriver: users[0].is_driver,
-                driverId: users[0].driver_id,
-                createdAt: users[0].created_at,
-                updatedAt: users[0].updated_at,
+                id: row.id,
+                email: row.email,
+                username: row.username,
+                walletAddress: row.wallet_address,
+                isDriver: row.is_driver,
+                driverId: row.driver_id,
+                createdAt: row.created_at,
+                updatedAt: row.updated_at,
             };
 
             return { user };
@@ -251,15 +253,16 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
                 };
             }
 
+            const row = users[0]!;
             const user: User = {
-                id: users[0].id,
-                email: users[0].email,
-                username: users[0].username,
-                walletAddress: users[0].wallet_address,
-                isDriver: users[0].is_driver,
-                driverId: users[0].driver_id,
-                createdAt: users[0].created_at,
-                updatedAt: users[0].updated_at,
+                id: row.id,
+                email: row.email,
+                username: row.username,
+                walletAddress: row.wallet_address,
+                isDriver: row.is_driver,
+                driverId: row.driver_id,
+                createdAt: row.created_at,
+                updatedAt: row.updated_at,
             };
 
             return { user };
