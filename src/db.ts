@@ -5,6 +5,7 @@ const sql = postgres(Bun.env.DATABASE_URL || 'postgres://localhost:5432/pullup',
     max: 10,
     idle_timeout: 20,
     connect_timeout: 10,
+    ssl: 'require',
 });
 
 // Initialize database schema
