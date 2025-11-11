@@ -23,7 +23,12 @@ function broadcastToClients(message: string) {
 
 // Main Elysia app
 const app = new Elysia()
-    .use(cors())
+    .use(cors({
+        origin: true, // Allow all origins
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization'],
+        credentials: true,
+    }))
     .decorate('db', sql) // ✅ This makes db available in all route handlers!
 
     // 👇 Include route modules (order matters - decorate before routes)
@@ -43,6 +48,19 @@ const app = new Elysia()
             return { success: false, error: error?.message || 'Unknown error' };
         }
     })
+
+    // Debug endpoint to test CORS and connectivity
+    .get('/api/debug', ({ headers }) => ({
+        message: 'API is working!',
+        timestamp: new Date().toISOString(),
+        headers: Object.fromEntries(Object.entries(headers)),
+    }))
+
+    .post('/api/debug', ({ body, headers }) => ({
+        message: 'POST request received',
+        body,
+        headers: Object.fromEntries(Object.entries(headers)),
+    }))
 
     // 👇 WebSocket endpoint
     .ws('/ws', {
