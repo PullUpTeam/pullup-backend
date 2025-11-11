@@ -1,16 +1,16 @@
 import { Elysia } from 'elysia';
 import { v4 as uuidv4 } from 'uuid';
 import type { User } from './types';
+import type { Sql } from 'postgres';
 
 export function createUsernameFromEmail(email: string): string {
     const username = email.split('@')[0];
-    // @ts-ignore
     return username.replace(/[^a-zA-Z0-9._]/g, '').toLowerCase();
 }
 
 export const userRoutes = new Elysia({ prefix: '/api/users' })
     // Check if user exists
-    .post('/check', async ({ body, redis }: { body: { email: string }; redis: any }) => {
+    .post('/check', async ({ body, db }: { body: { email: string }; db: Sql }) => {
         try {
             const { email } = body;
 
@@ -22,32 +22,38 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
             }
 
             // Check if user exists
-            const userData = await redis.get(`user:${email}`);
+            const users = await db`
+                SELECT * FROM users WHERE email = ${email}
+            `;
 
-            if (userData) {
-                const existingUser: User = JSON.parse(userData);
+            if (users.length > 0) {
+                const existingUser = users[0];
                 
-                // ✅ NEW: Check if user is also a driver and include driver info
+                // Check if user is also a driver
                 let driverId = null;
-                let isDriver = existingUser.isDriver || false;
+                let isDriver = existingUser.is_driver || false;
                 
                 try {
-                    const driverData = await redis.get(`driver:${email}`);
-                    if (driverData) {
-                        const driver = JSON.parse(driverData);
-                        if (driver.status === 'approved') {
-                            isDriver = true;
-                            driverId = driver.id;
-                        }
+                    const drivers = await db`
+                        SELECT id, status FROM drivers WHERE email = ${email}
+                    `;
+                    if (drivers.length > 0 && drivers[0].status === 'approved') {
+                        isDriver = true;
+                        driverId = drivers[0].id;
                     }
                 } catch (driverError) {
                     console.log('No driver record found for user:', email);
                 }
                 
-                const userWithDriverInfo = {
-                    ...existingUser,
+                const userWithDriverInfo: User = {
+                    id: existingUser.id,
+                    email: existingUser.email,
+                    username: existingUser.username,
+                    walletAddress: existingUser.wallet_address,
                     isDriver,
-                    driverId, // Include driver ID for frontend use
+                    driverId,
+                    createdAt: existingUser.created_at,
+                    updatedAt: existingUser.updated_at,
                 };
                 
                 return {
@@ -70,7 +76,7 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
     })
 
     // Create new user
-    .post('/create', async ({ body, redis }: { body: { email: string; walletAddress?: string; username?: string }; redis: any }) => {
+    .post('/create', async ({ body, db }: { body: { email: string; walletAddress?: string; username?: string }; db: Sql }) => {
         try {
             const { email, walletAddress, username } = body;
 
@@ -82,8 +88,11 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
             }
 
             // Check if user already exists
-            const existingUserData = await redis.get(`user:${email}`);
-            if (existingUserData) {
+            const existing = await db`
+                SELECT id FROM users WHERE email = ${email}
+            `;
+            
+            if (existing.length > 0) {
                 return {
                     error: 'User already exists',
                     status: 400,
@@ -95,6 +104,11 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
             const finalUsername = username || createUsernameFromEmail(email);
             const now = new Date().toISOString();
 
+            await db`
+                INSERT INTO users (id, email, username, wallet_address, created_at, updated_at)
+                VALUES (${userId}, ${email}, ${finalUsername}, ${walletAddress || null}, ${now}, ${now})
+            `;
+
             const newUser: User = {
                 id: userId,
                 email,
@@ -103,13 +117,6 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
                 createdAt: now,
                 updatedAt: now,
             };
-
-            // Store user in Redis
-            const userJson = JSON.stringify(newUser);
-            await redis.set(`user:${email}`, userJson);
-
-            // Also store by ID for quick lookups
-            await redis.set(`user:id:${userId}`, userJson);
 
             return {
                 success: true,
@@ -126,7 +133,7 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
     })
 
     // Update user
-    .put('/update', async ({ body, redis }: { body: { email: string; walletAddress?: string; username?: string }; redis: any }) => {
+    .put('/update', async ({ body, db }: { body: { email: string; walletAddress?: string; username?: string }; db: Sql }) => {
         try {
             const { email, walletAddress, username } = body;
 
@@ -138,28 +145,43 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
             }
 
             // Get existing user
-            const existingUserData = await redis.get(`user:${email}`);
-            if (!existingUserData) {
+            const existing = await db`
+                SELECT * FROM users WHERE email = ${email}
+            `;
+            
+            if (existing.length === 0) {
                 return {
                     error: 'User not found',
                     status: 404,
                 };
             }
 
-            const existingUser: User = JSON.parse(existingUserData);
+            const now = new Date().toISOString();
 
             // Update user
-            const updatedUser: User = {
-                ...existingUser,
-                ...(walletAddress && { walletAddress }),
-                ...(username && { username }),
-                updatedAt: new Date().toISOString(),
-            };
+            await db`
+                UPDATE users 
+                SET 
+                    ${walletAddress !== undefined ? db`wallet_address = ${walletAddress},` : db``}
+                    ${username !== undefined ? db`username = ${username},` : db``}
+                    updated_at = ${now}
+                WHERE email = ${email}
+            `;
 
-            // Update in Redis
-            const userJson = JSON.stringify(updatedUser);
-            await redis.set(`user:${email}`, userJson);
-            await redis.set(`user:id:${existingUser.id}`, userJson);
+            const updated = await db`
+                SELECT * FROM users WHERE email = ${email}
+            `;
+
+            const updatedUser: User = {
+                id: updated[0].id,
+                email: updated[0].email,
+                username: updated[0].username,
+                walletAddress: updated[0].wallet_address,
+                isDriver: updated[0].is_driver,
+                driverId: updated[0].driver_id,
+                createdAt: updated[0].created_at,
+                updatedAt: updated[0].updated_at,
+            };
 
             return {
                 success: true,
@@ -176,20 +198,32 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
     })
 
     // Get user by ID
-    .get('/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
+    .get('/:id', async ({ params, db }: { params: { id: string }; db: Sql }) => {
         try {
             const { id } = params;
 
-            const userData = await redis.get(`user:id:${id}`);
+            const users = await db`
+                SELECT * FROM users WHERE id = ${id}
+            `;
 
-            if (!userData) {
+            if (users.length === 0) {
                 return {
                     error: 'User not found',
                     status: 404,
                 };
             }
 
-            const user: User = JSON.parse(userData);
+            const user: User = {
+                id: users[0].id,
+                email: users[0].email,
+                username: users[0].username,
+                walletAddress: users[0].wallet_address,
+                isDriver: users[0].is_driver,
+                driverId: users[0].driver_id,
+                createdAt: users[0].created_at,
+                updatedAt: users[0].updated_at,
+            };
+
             return { user };
 
         } catch (error) {
@@ -202,20 +236,32 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
     })
 
     // Get user by email
-    .get('/email/:email', async ({ params, redis }: { params: { email: string }; redis: any }) => {
+    .get('/email/:email', async ({ params, db }: { params: { email: string }; db: Sql }) => {
         try {
             const { email } = params;
 
-            const userData = await redis.get(`user:${decodeURIComponent(email)}`);
+            const users = await db`
+                SELECT * FROM users WHERE email = ${decodeURIComponent(email)}
+            `;
 
-            if (!userData) {
+            if (users.length === 0) {
                 return {
                     error: 'User not found',
                     status: 404,
                 };
             }
 
-            const user: User = JSON.parse(userData);
+            const user: User = {
+                id: users[0].id,
+                email: users[0].email,
+                username: users[0].username,
+                walletAddress: users[0].wallet_address,
+                isDriver: users[0].is_driver,
+                driverId: users[0].driver_id,
+                createdAt: users[0].created_at,
+                updatedAt: users[0].updated_at,
+            };
+
             return { user };
 
         } catch (error) {
@@ -227,22 +273,25 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
         }
     })
 
-    // Get all users (for admin purposes - consider adding auth)
-    .get('/', async ({ redis }: { redis: any }) => {
+    // Get all users (for admin purposes)
+    .get('/', async ({ db }: { db: Sql }) => {
         try {
-            // This is a simple implementation - in production, you'd want pagination
-            // and proper admin authentication
-            const keys = await redis.keys('user:*');
-            const emailKeys = keys.filter((key: string) => !key.includes('user:id:'));
+            const results = await db`
+                SELECT * FROM users ORDER BY created_at DESC
+            `;
 
-            const users = await Promise.all(
-                emailKeys.map(async (key: string) => {
-                    const userData = await redis.get(key);
-                    return userData ? JSON.parse(userData) : null;
-                })
-            );
+            const users: User[] = results.map(row => ({
+                id: row.id,
+                email: row.email,
+                username: row.username,
+                walletAddress: row.wallet_address,
+                isDriver: row.is_driver,
+                driverId: row.driver_id,
+                createdAt: row.created_at,
+                updatedAt: row.updated_at,
+            }));
 
-            return { users: users.filter(Boolean) };
+            return { users };
 
         } catch (error) {
             console.error('Error fetching users:', error);
@@ -254,25 +303,20 @@ export const userRoutes = new Elysia({ prefix: '/api/users' })
     })
 
     // Delete user
-    .delete('/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
+    .delete('/:id', async ({ params, db }: { params: { id: string }; db: Sql }) => {
         try {
             const { id } = params;
 
-            // Get user first to find email
-            const userData = await redis.get(`user:id:${id}`);
+            const result = await db`
+                DELETE FROM users WHERE id = ${id} RETURNING id
+            `;
 
-            if (!userData) {
+            if (result.length === 0) {
                 return {
                     error: 'User not found',
                     status: 404,
                 };
             }
-
-            const user: User = JSON.parse(userData);
-
-            // Delete both keys
-            await redis.del(`user:${user.email}`);
-            await redis.del(`user:id:${id}`);
 
             return {
                 success: true,

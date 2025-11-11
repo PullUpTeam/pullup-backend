@@ -1,10 +1,11 @@
 import { Elysia } from 'elysia';
 import { v4 as uuidv4 } from 'uuid';
 import type { Ride, Coordinates } from './types';
+import type { Sql } from 'postgres';
 
 export const rideRoutes = new Elysia({ prefix: '/api/rides' })
     // Create new ride
-    .post('/create', async ({ body, redis }: {
+    .post('/create', async ({ body, db }: {
         body: {
             userId: string;
             userEmail: string;
@@ -18,7 +19,7 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
             scheduledTime?: string;
             notes?: string;
         };
-        redis: any;
+        db: Sql;
     }) => {
         try {
             const {
@@ -36,7 +37,7 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
             // Validate required fields
             if (!userId || !userEmail || !originCoordinates || !destinationCoordinates || !originAddress || !destinationAddress) {
                 return {
-                    error: 'Missing required fields: userId, userEmail, originCoordinates, destinationCoordinates, originAddress, destinationAddress',
+                    error: 'Missing required fields',
                     status: 400,
                 };
             }
@@ -54,6 +55,23 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
             const rideId = uuidv4();
             const now = new Date().toISOString();
 
+            await db`
+                INSERT INTO rides (
+                    id, user_id, user_email, wallet_address,
+                    origin_lat, origin_lng, destination_lat, destination_lng,
+                    origin_address, destination_address,
+                    estimated_price, custom_price, status,
+                    created_at, updated_at
+                ) VALUES (
+                    ${rideId}, ${userId}, ${userEmail}, ${walletAddress},
+                    ${originCoordinates.latitude}, ${originCoordinates.longitude},
+                    ${destinationCoordinates.latitude}, ${destinationCoordinates.longitude},
+                    ${originAddress}, ${destinationAddress},
+                    ${estimatedPrice || null}, ${customPrice || null}, 'pending',
+                    ${now}, ${now}
+                )
+            `;
+
             const newRide: Ride = {
                 id: rideId,
                 userId,
@@ -70,16 +88,6 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 updatedAt: now,
             };
 
-            // Store ride in Redis
-            const rideJson = JSON.stringify(newRide);
-            await redis.set(`ride:${rideId}`, rideJson);
-
-            // Store by user ID for quick user ride lookups
-            await redis.sAdd(`user:rides:${userId}`, rideId);
-
-            // Store in a sorted set by creation time for chronological queries
-            await redis.zAdd('rides:all', { score: Date.now(), value: rideId });
-
             return {
                 success: true,
                 ride: newRide
@@ -95,20 +103,40 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
     })
 
     // Get ride by ID
-    .get('/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
+    .get('/:id', async ({ params, db }: { params: { id: string }; db: Sql }) => {
         try {
             const { id } = params;
 
-            const rideData = await redis.get(`ride:${id}`);
+            const rides = await db`
+                SELECT * FROM rides WHERE id = ${id}
+            `;
 
-            if (!rideData) {
+            if (rides.length === 0) {
                 return {
                     error: 'Ride not found',
                     status: 404,
                 };
             }
 
-            const ride: Ride = JSON.parse(rideData);
+            const row = rides[0];
+            const ride: Ride = {
+                id: row.id,
+                userId: row.user_id,
+                userEmail: row.user_email,
+                walletAddress: row.wallet_address,
+                originCoordinates: { latitude: row.origin_lat, longitude: row.origin_lng },
+                destinationCoordinates: { latitude: row.destination_lat, longitude: row.destination_lng },
+                originAddress: row.origin_address,
+                destinationAddress: row.destination_address,
+                estimatedPrice: row.estimated_price,
+                customPrice: row.custom_price,
+                status: row.status,
+                assignedDriverId: row.assigned_driver_id,
+                driverAcceptedAt: row.driver_accepted_at,
+                createdAt: row.created_at,
+                updatedAt: row.updated_at,
+            };
+
             return { ride };
 
         } catch (error) {
@@ -121,31 +149,35 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
     })
 
     // Get rides by user ID
-    .get('/user/:userId', async ({ params, redis }: { params: { userId: string }; redis: any }) => {
+    .get('/user/:userId', async ({ params, db }: { params: { userId: string }; db: Sql }) => {
         try {
             const { userId } = params;
 
-            // Get ride IDs for the user
-            const rideIds = await redis.sMembers(`user:rides:${userId}`);
+            const results = await db`
+                SELECT * FROM rides 
+                WHERE user_id = ${userId}
+                ORDER BY created_at DESC
+            `;
 
-            if (rideIds.length === 0) {
-                return { rides: [] };
-            }
+            const rides: Ride[] = results.map(row => ({
+                id: row.id,
+                userId: row.user_id,
+                userEmail: row.user_email,
+                walletAddress: row.wallet_address,
+                originCoordinates: { latitude: row.origin_lat, longitude: row.origin_lng },
+                destinationCoordinates: { latitude: row.destination_lat, longitude: row.destination_lng },
+                originAddress: row.origin_address,
+                destinationAddress: row.destination_address,
+                estimatedPrice: row.estimated_price,
+                customPrice: row.custom_price,
+                status: row.status,
+                assignedDriverId: row.assigned_driver_id,
+                driverAcceptedAt: row.driver_accepted_at,
+                createdAt: row.created_at,
+                updatedAt: row.updated_at,
+            }));
 
-            // Get ride data for each ID
-            const rides = await Promise.all(
-                rideIds.map(async (rideId: string) => {
-                    const rideData = await redis.get(`ride:${rideId}`);
-                    return rideData ? JSON.parse(rideData) : null;
-                })
-            );
-
-            // Filter out null values and sort by creation time (newest first)
-            const validRides = rides.filter(Boolean).sort((a, b) =>
-                new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-            );
-
-            return { rides: validRides };
+            return { rides };
 
         } catch (error) {
             console.error('Error fetching user rides:', error);
@@ -157,39 +189,52 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
     })
 
     // Get all rides (for admin purposes - with pagination)
-    .get('/', async ({ query, redis }: { query: { limit?: string; offset?: string; status?: string }; redis: any }) => {
+    .get('/', async ({ query, db }: { query: { limit?: string; offset?: string; status?: string }; db: Sql }) => {
         try {
+            const limit = parseInt(query.limit || '50');
             const offset = parseInt(query.offset || '0');
             const statusFilter = query.status;
 
-            // Get ride IDs from sorted set (newest first)
-            const rideIds = await redis.zRange('rides:all', offset, offset - 1, { REV: true });
-
-            if (rideIds.length === 0) {
-                return { rides: [], total: 0 };
-            }
-
-            // Get ride data for each ID
-            const rides = await Promise.all(
-                rideIds.map(async (rideId: string) => {
-                    const rideData = await redis.get(`ride:${rideId}`);
-                    return rideData ? JSON.parse(rideData) : null;
-                })
-            );
-
-            let validRides = rides.filter(Boolean);
-
-            // Apply status filter if provided
+            let results;
             if (statusFilter) {
-                validRides = validRides.filter(ride => ride.status === statusFilter);
+                results = await db`
+                    SELECT * FROM rides 
+                    WHERE status = ${statusFilter}
+                    ORDER BY created_at DESC
+                    LIMIT ${limit} OFFSET ${offset}
+                `;
+            } else {
+                results = await db`
+                    SELECT * FROM rides 
+                    ORDER BY created_at DESC
+                    LIMIT ${limit} OFFSET ${offset}
+                `;
             }
 
-            // Get total count
-            const totalCount = await redis.zCard('rides:all');
+            const rides: Ride[] = results.map(row => ({
+                id: row.id,
+                userId: row.user_id,
+                userEmail: row.user_email,
+                walletAddress: row.wallet_address,
+                originCoordinates: { latitude: row.origin_lat, longitude: row.origin_lng },
+                destinationCoordinates: { latitude: row.destination_lat, longitude: row.destination_lng },
+                originAddress: row.origin_address,
+                destinationAddress: row.destination_address,
+                estimatedPrice: row.estimated_price,
+                customPrice: row.custom_price,
+                status: row.status,
+                assignedDriverId: row.assigned_driver_id,
+                driverAcceptedAt: row.driver_accepted_at,
+                createdAt: row.created_at,
+                updatedAt: row.updated_at,
+            }));
+
+            const totalResult = await db`SELECT COUNT(*) as count FROM rides`;
+            const total = parseInt(totalResult[0].count);
 
             return {
-                rides: validRides,
-                total: totalCount,
+                rides,
+                total,
                 offset
             };
 
@@ -203,25 +248,18 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
     })
 
     // Update ride status
-    .put('/:id/status', async ({ params, body, redis }: {
+    .put('/:id/status', async ({ params, body, db }: {
         params: { id: string };
-        body: { status: 'pending' | 'accepted' | 'driver_assigned' | 'approaching_pickup' | 'driver_arrived' | 'in_progress' | 'completed' | 'cancelled' };
-        redis: any;
+        body: { status: string };
+        db: Sql;
     }) => {
         try {
             const { id } = params;
             const { status } = body;
 
-            // ✅ Updated to include all frontend-expected statuses
             const validStatuses = [
-                'pending',
-                'accepted',
-                'driver_assigned',
-                'approaching_pickup',
-                'driver_arrived',
-                'in_progress',
-                'completed',
-                'cancelled'
+                'pending', 'accepted', 'driver_assigned', 'approaching_pickup',
+                'driver_arrived', 'in_progress', 'completed', 'cancelled'
             ];
 
             if (!status || !validStatuses.includes(status)) {
@@ -231,27 +269,40 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 };
             }
 
-            // Get existing ride
-            const existingRideData = await redis.get(`ride:${id}`);
-            if (!existingRideData) {
+            const now = new Date().toISOString();
+
+            const result = await db`
+                UPDATE rides 
+                SET status = ${status}, updated_at = ${now}
+                WHERE id = ${id}
+                RETURNING *
+            `;
+
+            if (result.length === 0) {
                 return {
                     error: 'Ride not found',
                     status: 404,
                 };
             }
 
-            const existingRide = JSON.parse(existingRideData);
-
-            // Update ride
-            const updatedRide = {
-                ...existingRide,
-                status,
-                updatedAt: new Date().toISOString(),
+            const row = result[0];
+            const updatedRide: Ride = {
+                id: row.id,
+                userId: row.user_id,
+                userEmail: row.user_email,
+                walletAddress: row.wallet_address,
+                originCoordinates: { latitude: row.origin_lat, longitude: row.origin_lng },
+                destinationCoordinates: { latitude: row.destination_lat, longitude: row.destination_lng },
+                originAddress: row.origin_address,
+                destinationAddress: row.destination_address,
+                estimatedPrice: row.estimated_price,
+                customPrice: row.custom_price,
+                status: row.status,
+                assignedDriverId: row.assigned_driver_id,
+                driverAcceptedAt: row.driver_accepted_at,
+                createdAt: row.created_at,
+                updatedAt: row.updated_at,
             };
-
-            // Update in Redis
-            const rideJson = JSON.stringify(updatedRide);
-            await redis.set(`ride:${id}`, rideJson);
 
             return {
                 success: true,
@@ -266,96 +317,12 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
             };
         }
     })
-    .get('/:id/location', async ({ params, redis }: {
-        params: { id: string };
-        redis: any;
-    }) => {
-        try {
-            const { id: driverId } = params;
 
-            // First try to get location from dedicated location storage
-            let locationData = await redis.get(`driver:location:${driverId}`);
-
-            if (!locationData) {
-                // Fallback: get location from driver record
-                const driverData = await redis.get(`driver:id:${driverId}`);
-                if (driverData) {
-                    const driver = JSON.parse(driverData);
-                    if (driver.latitude && driver.longitude) {
-                        locationData = JSON.stringify({
-                            driverId,
-                            latitude: driver.latitude,
-                            longitude: driver.longitude,
-                            timestamp: driver.lastLocationUpdate || new Date().toISOString(),
-                        });
-                    }
-                }
-            }
-
-            if (!locationData) {
-                return {
-                    location: null
-                };
-            }
-
-            const location = JSON.parse(locationData);
-
-            return {
-                location
-            };
-
-        } catch (error) {
-            console.error('Error getting driver location:', error);
-            return {
-                error: 'Internal server error',
-                status: 500,
-            };
-        }
-    })
-
-    // ✅ UPDATED: Get driver by ID - returns simplified interface for frontend
-    .get('/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
-        try {
-            const { id } = params;
-
-            const driverData = await redis.get(`driver:id:${id}`);
-
-            if (!driverData) {
-                return {
-                    error: 'Driver not found',
-                    status: 404,
-                };
-            }
-
-            const fullDriver = JSON.parse(driverData);
-
-            // ✅ Convert to simple driver interface for frontend
-            const driver = {
-                id: fullDriver.id,
-                email: fullDriver.email,
-                username: fullDriver.fullName || fullDriver.email.split('@')[0], // Use fullName or email prefix
-                walletAddress: fullDriver.walletAddress || '', // Add empty string if missing
-                isDriver: fullDriver.status === 'approved', // Driver is active if approved
-                createdAt: fullDriver.createdAt,
-                updatedAt: fullDriver.updatedAt,
-            };
-
-            return { driver };
-
-        } catch (error) {
-            console.error('Error fetching driver:', error);
-            return {
-                error: 'Internal server error',
-                status: 500,
-            };
-        }
-    })
-
-    // ✅ UPDATED: Driver assignment endpoint in rides - returns simplified driver
-    .put('/:id/assign-driver', async ({ params, body, redis }: {
+    // Assign driver to ride
+    .put('/:id/assign-driver', async ({ params, body, db }: {
         params: { id: string };
         body: { driverId: string; status?: string };
-        redis: any;
+        db: Sql;
     }) => {
         try {
             const { id } = params;
@@ -369,17 +336,19 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
             }
 
             // Get existing ride
-            const existingRideData = await redis.get(`ride:${id}`);
-            if (!existingRideData) {
+            const rides = await db`
+                SELECT * FROM rides WHERE id = ${id}
+            `;
+
+            if (rides.length === 0) {
                 return {
                     error: 'Ride not found',
                     status: 404,
                 };
             }
 
-            const existingRide = JSON.parse(existingRideData);
+            const existingRide = rides[0];
 
-            // Check if ride is in pending or accepted status
             if (!['pending', 'accepted'].includes(existingRide.status)) {
                 return {
                     error: 'Ride cannot be assigned to driver in current status',
@@ -388,41 +357,59 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
             }
 
             // Get driver info
-            const driverData = await redis.get(`driver:id:${driverId}`);
-            if (!driverData) {
+            const drivers = await db`
+                SELECT * FROM drivers WHERE id = ${driverId}
+            `;
+
+            if (drivers.length === 0) {
                 return {
                     error: 'Driver not found',
                     status: 404,
                 };
             }
 
-            const fullDriver = JSON.parse(driverData);
+            const fullDriver = drivers[0];
+            const now = new Date().toISOString();
 
-            // Update ride with assigned driver
-            const updatedRide = {
-                ...existingRide,
-                assignedDriverId: driverId,
-                status: status,
-                driverAcceptedAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
+            // Update ride
+            const result = await db`
+                UPDATE rides 
+                SET 
+                    assigned_driver_id = ${driverId},
+                    status = ${status},
+                    driver_accepted_at = ${now},
+                    updated_at = ${now}
+                WHERE id = ${id}
+                RETURNING *
+            `;
+
+            const row = result[0];
+            const updatedRide: Ride = {
+                id: row.id,
+                userId: row.user_id,
+                userEmail: row.user_email,
+                walletAddress: row.wallet_address,
+                originCoordinates: { latitude: row.origin_lat, longitude: row.origin_lng },
+                destinationCoordinates: { latitude: row.destination_lat, longitude: row.destination_lng },
+                originAddress: row.origin_address,
+                destinationAddress: row.destination_address,
+                estimatedPrice: row.estimated_price,
+                customPrice: row.custom_price,
+                status: row.status,
+                assignedDriverId: row.assigned_driver_id,
+                driverAcceptedAt: row.driver_accepted_at,
+                createdAt: row.created_at,
+                updatedAt: row.updated_at,
             };
 
-            // Update in Redis
-            const rideJson = JSON.stringify(updatedRide);
-            await redis.set(`ride:${id}`, rideJson);
-
-            // Add ride to driver's assigned rides
-            await redis.sAdd(`driver:rides:${driverId}`, id);
-
-            // ✅ Return simplified driver interface
             const driver = {
                 id: fullDriver.id,
                 email: fullDriver.email,
-                username: fullDriver.fullName || fullDriver.email.split('@')[0],
-                walletAddress: fullDriver.walletAddress || '',
+                username: fullDriver.full_name || fullDriver.email.split('@')[0],
+                walletAddress: fullDriver.wallet_address || '',
                 isDriver: fullDriver.status === 'approved',
-                createdAt: fullDriver.createdAt,
-                updatedAt: fullDriver.updatedAt,
+                createdAt: fullDriver.created_at,
+                updatedAt: fullDriver.updated_at,
             };
 
             return {
@@ -440,56 +427,53 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
         }
     })
 
-    // ✅ UPDATED: Get assigned driver - returns simplified interface
-    .get('/:id/driver', async ({ params, redis }: {
+    // Get assigned driver
+    .get('/:id/driver', async ({ params, db }: {
         params: { id: string };
-        redis: any;
+        db: Sql;
     }) => {
         try {
             const { id } = params;
 
             // Get ride data
-            const rideData = await redis.get(`ride:${id}`);
-            if (!rideData) {
+            const rides = await db`
+                SELECT * FROM rides WHERE id = ${id}
+            `;
+
+            if (rides.length === 0) {
                 return {
                     error: 'Ride not found',
                     status: 404,
                 };
             }
 
-            const ride = JSON.parse(rideData);
+            const ride = rides[0];
 
-            // Check if ride has assigned driver
-            if (!ride.assignedDriverId) {
-                return {
-                    driver: null
-                };
+            if (!ride.assigned_driver_id) {
+                return { driver: null };
             }
 
             // Get driver data
-            const driverData = await redis.get(`driver:id:${ride.assignedDriverId}`);
-            if (!driverData) {
-                return {
-                    driver: null
-                };
+            const drivers = await db`
+                SELECT * FROM drivers WHERE id = ${ride.assigned_driver_id}
+            `;
+
+            if (drivers.length === 0) {
+                return { driver: null };
             }
 
-            const fullDriver = JSON.parse(driverData);
-
-            // ✅ Return simplified driver interface
+            const fullDriver = drivers[0];
             const driver = {
                 id: fullDriver.id,
                 email: fullDriver.email,
-                username: fullDriver.fullName || fullDriver.email.split('@')[0],
-                walletAddress: fullDriver.walletAddress || '',
+                username: fullDriver.full_name || fullDriver.email.split('@')[0],
+                walletAddress: fullDriver.wallet_address || '',
                 isDriver: fullDriver.status === 'approved',
-                createdAt: fullDriver.createdAt,
-                updatedAt: fullDriver.updatedAt,
+                createdAt: fullDriver.created_at,
+                updatedAt: fullDriver.updated_at,
             };
 
-            return {
-                driver
-            };
+            return { driver };
 
         } catch (error) {
             console.error('Error getting assigned driver:', error);
@@ -499,31 +483,79 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
             };
         }
     })
+
+    // Get driver location
+    .get('/:id/location', async ({ params, db }: {
+        params: { id: string };
+        db: Sql;
+    }) => {
+        try {
+            const { id: driverId } = params;
+
+            // Get location from driver_locations table
+            const locations = await db`
+                SELECT * FROM driver_locations WHERE driver_id = ${driverId}
+            `;
+
+            if (locations.length === 0) {
+                // Fallback: get location from driver record
+                const drivers = await db`
+                    SELECT latitude, longitude, last_location_update 
+                    FROM drivers 
+                    WHERE id = ${driverId}
+                `;
+
+                if (drivers.length > 0 && drivers[0].latitude && drivers[0].longitude) {
+                    return {
+                        location: {
+                            driverId,
+                            latitude: drivers[0].latitude,
+                            longitude: drivers[0].longitude,
+                            timestamp: drivers[0].last_location_update || new Date().toISOString(),
+                        }
+                    };
+                }
+
+                return { location: null };
+            }
+
+            const loc = locations[0];
+            return {
+                location: {
+                    driverId: loc.driver_id,
+                    latitude: loc.latitude,
+                    longitude: loc.longitude,
+                    heading: loc.heading,
+                    speed: loc.speed,
+                    accuracy: loc.accuracy,
+                    timestamp: loc.timestamp,
+                }
+            };
+
+        } catch (error) {
+            console.error('Error getting driver location:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
     // Delete ride
-    .delete('/:id', async ({ params, redis }: { params: { id: string }; redis: any }) => {
+    .delete('/:id', async ({ params, db }: { params: { id: string }; db: Sql }) => {
         try {
             const { id } = params;
 
-            // Get ride first to find user ID
-            const rideData = await redis.get(`ride:${id}`);
+            const result = await db`
+                DELETE FROM rides WHERE id = ${id} RETURNING id
+            `;
 
-            if (!rideData) {
+            if (result.length === 0) {
                 return {
                     error: 'Ride not found',
                     status: 404,
                 };
             }
-
-            const ride: Ride = JSON.parse(rideData);
-
-            // Delete ride data
-            await redis.del(`ride:${id}`);
-
-            // Remove from user rides set
-            await redis.sRem(`user:rides:${ride.userId}`, id);
-
-            // Remove from all rides sorted set
-            await redis.zRem('rides:all', id);
 
             return {
                 success: true,
@@ -537,6 +569,4 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
                 status: 500,
             };
         }
-
-
     });

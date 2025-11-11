@@ -1,35 +1,30 @@
 import { Elysia } from 'elysia';
 import { cors } from '@elysiajs/cors';
-import { createClient } from 'redis';
+import sql, { initDatabase } from './db';
 import { userRoutes } from './users';
 import { rideRoutes } from './rides';
 import { driverRoutes } from "./drivers.ts";
 
-// Setup Redis
-const redis = createClient({ url: Bun.env.REDIS_URL || 'redis://localhost:6379' });
-const redisSub = createClient({ url: Bun.env.REDIS_URL || 'redis://localhost:6379' });
-await redis.connect();
-await redisSub.connect();
+// Initialize database
+await initDatabase();
+console.log('✅ Database connected successfully');
 
-// Test Redis connection
-console.log('✅ Redis connected successfully');
-
-const CHANNEL = 'rides';
 const clients = new Set<WebSocket>();
 
-await redisSub.subscribe(CHANNEL, (message) => {
-    console.log('📡 Redis -> WebSocket:', message);
+// Broadcast helper for WebSocket
+function broadcastToClients(message: string) {
+    console.log('📡 Broadcasting to WebSocket clients:', message);
     for (const client of clients) {
         if (client.readyState === client.OPEN) {
             client.send(message);
         }
     }
-});
+}
 
 // Main Elysia app
 const app = new Elysia()
     .use(cors())
-    .decorate('redis', redis) // ✅ This makes redis available in all route handlers!
+    .decorate('db', sql) // ✅ This makes db available in all route handlers!
 
     // 👇 Include route modules (order matters - decorate before routes)
     .use(userRoutes)
@@ -39,12 +34,11 @@ const app = new Elysia()
     // Health check endpoint
     .get('/health', () => ({ status: 'ok', timestamp: new Date().toISOString() }))
 
-    // Test Redis endpoint
-    .get('/test-redis', async ({ redis }) => {
+    // Test database endpoint
+    .get('/test-db', async ({ db }) => {
         try {
-            await redis.set('test-key', 'test-value');
-            const value = await redis.get('test-key');
-            return { success: true, value, message: 'Redis is working!' };
+            const result = await db`SELECT NOW() as time`;
+            return { success: true, time: result[0].time, message: 'Database is working!' };
         } catch (error) {
             return { success: false, error: error.message };
         }
@@ -74,7 +68,8 @@ const app = new Elysia()
                 }
 
                 if (parsed.type === 'locationUpdate') {
-                    redis.publish(CHANNEL, JSON.stringify(parsed));
+                    // Broadcast to all connected clients
+                    broadcastToClients(JSON.stringify(parsed));
                 }
             } catch (err) {
                 console.error('❗ Invalid message format:', err);
@@ -85,5 +80,5 @@ const app = new Elysia()
 
 console.log(`✅ Elysia is running at http://localhost:3001`);
 console.log(`🏥 Health check: http://localhost:3001/health`);
-console.log(`🧪 Redis test: http://localhost:3001/test-redis`);
+console.log(`🧪 Database test: http://localhost:3001/test-db`);
 console.log('🚀 Server ready!');
