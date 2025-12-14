@@ -29,6 +29,12 @@ function mapRowToFullDriver(row: any): FullDriver {
         isDriver: row.is_driver,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        // Matching preferences
+        pricePerKm: row.price_per_km ?? 1.5,
+        minPricePerRide: row.min_price_per_ride ?? 5.0,
+        maxPickupRadiusKm: row.max_pickup_radius_km ?? 10.0,
+        vehicleType: row.vehicle_type ?? 1,
+        maxPassengers: row.max_passengers ?? 4,
     };
 }
 
@@ -1027,6 +1033,128 @@ export const driverRoutes = new Elysia({ prefix: '/api/drivers' })
 
         } catch (error) {
             console.error('Error deleting driver:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // Update driver matching preferences
+    .put('/:id/preferences', async ({ params, body, db }: {
+        params: { id: string };
+        body: {
+            pricePerKm?: number;
+            minPricePerRide?: number;
+            maxPickupRadiusKm?: number;
+            vehicleType?: number;
+            maxPassengers?: number;
+        };
+        db: Sql;
+    }) => {
+        try {
+            const { id } = params;
+            const { pricePerKm, minPricePerRide, maxPickupRadiusKm, vehicleType, maxPassengers } = body;
+
+            // Get existing driver
+            const drivers = await db`
+                SELECT * FROM drivers WHERE id = ${id}
+            `;
+
+            if (drivers.length === 0) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
+
+            // Validate preferences
+            if (pricePerKm !== undefined && pricePerKm < 0) {
+                return { error: 'Price per km must be non-negative', status: 400 };
+            }
+            if (minPricePerRide !== undefined && minPricePerRide < 0) {
+                return { error: 'Min price per ride must be non-negative', status: 400 };
+            }
+            if (maxPickupRadiusKm !== undefined && (maxPickupRadiusKm < 1 || maxPickupRadiusKm > 100)) {
+                return { error: 'Max pickup radius must be between 1 and 100 km', status: 400 };
+            }
+            if (vehicleType !== undefined && (vehicleType < 1 || vehicleType > 5)) {
+                return { error: 'Vehicle type must be between 1 and 5', status: 400 };
+            }
+            if (maxPassengers !== undefined && (maxPassengers < 1 || maxPassengers > 8)) {
+                return { error: 'Max passengers must be between 1 and 8', status: 400 };
+            }
+
+            const now = new Date().toISOString();
+
+            const result = await db`
+                UPDATE drivers SET
+                    price_per_km = COALESCE(${pricePerKm ?? null}, price_per_km),
+                    min_price_per_ride = COALESCE(${minPricePerRide ?? null}, min_price_per_ride),
+                    max_pickup_radius_km = COALESCE(${maxPickupRadiusKm ?? null}, max_pickup_radius_km),
+                    vehicle_type = COALESCE(${vehicleType ?? null}, vehicle_type),
+                    max_passengers = COALESCE(${maxPassengers ?? null}, max_passengers),
+                    updated_at = ${now}
+                WHERE id = ${id}
+                RETURNING *
+            `;
+
+            const updatedDriver = mapRowToFullDriver(result[0]!);
+            return {
+                success: true,
+                driver: updatedDriver,
+                preferences: {
+                    pricePerKm: updatedDriver.pricePerKm,
+                    minPricePerRide: updatedDriver.minPricePerRide,
+                    maxPickupRadiusKm: updatedDriver.maxPickupRadiusKm,
+                    vehicleType: updatedDriver.vehicleType,
+                    maxPassengers: updatedDriver.maxPassengers,
+                }
+            };
+
+        } catch (error) {
+            console.error('Error updating driver preferences:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // Get driver matching preferences
+    .get('/:id/preferences', async ({ params, db }: {
+        params: { id: string };
+        db: Sql;
+    }) => {
+        try {
+            const { id } = params;
+
+            const drivers = await db`
+                SELECT price_per_km, min_price_per_ride, max_pickup_radius_km,
+                       vehicle_type, max_passengers
+                FROM drivers WHERE id = ${id}
+            `;
+
+            if (drivers.length === 0) {
+                return {
+                    error: 'Driver not found',
+                    status: 404,
+                };
+            }
+
+            const row = drivers[0]!;
+            return {
+                preferences: {
+                    pricePerKm: row.price_per_km ?? 1.5,
+                    minPricePerRide: row.min_price_per_ride ?? 5.0,
+                    maxPickupRadiusKm: row.max_pickup_radius_km ?? 10.0,
+                    vehicleType: row.vehicle_type ?? 1,
+                    maxPassengers: row.max_passengers ?? 4,
+                }
+            };
+
+        } catch (error) {
+            console.error('Error fetching driver preferences:', error);
             return {
                 error: 'Internal server error',
                 status: 500,

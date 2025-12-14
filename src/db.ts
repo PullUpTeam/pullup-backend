@@ -47,6 +47,12 @@ export async function initDatabase() {
             username TEXT,
             wallet_address TEXT,
             is_driver BOOLEAN DEFAULT FALSE,
+            -- Driver matching preferences
+            price_per_km DOUBLE PRECISION DEFAULT 1.5,
+            min_price_per_ride DOUBLE PRECISION DEFAULT 5.0,
+            max_pickup_radius_km DOUBLE PRECISION DEFAULT 10.0,
+            vehicle_type INTEGER DEFAULT 1,
+            max_passengers INTEGER DEFAULT 4,
             created_at TIMESTAMPTZ NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL
         )
@@ -66,6 +72,9 @@ export async function initDatabase() {
             destination_address TEXT NOT NULL,
             estimated_price TEXT,
             custom_price TEXT,
+            distance_km DOUBLE PRECISION,
+            passenger_count INTEGER DEFAULT 1,
+            required_vehicle_type INTEGER DEFAULT 1,
             status TEXT NOT NULL DEFAULT 'pending',
             assigned_driver_id TEXT,
             driver_accepted_at TIMESTAMPTZ,

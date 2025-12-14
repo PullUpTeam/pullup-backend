@@ -26,11 +26,22 @@ export interface Ride {
     destinationAddress: string;
     estimatedPrice?: string;
     customPrice?: string;
-    status: 'pending' | 'accepted' | 'driver_assigned' | 'approaching_pickup' | 'driver_arrived' | 'in_progress' | 'completed' | 'cancelled'; // ✅ Updated statuses
-    assignedDriverId?: string;    // ✅ Added missing field
-    driverAcceptedAt?: string;    // ✅ Added missing field
+    distanceKm?: number;
+    passengerCount?: number;
+    requiredVehicleType?: number;
+    status: 'pending' | 'accepted' | 'driver_assigned' | 'approaching_pickup' | 'driver_arrived' | 'in_progress' | 'completed' | 'cancelled';
+    assignedDriverId?: string;
+    driverAcceptedAt?: string;
     createdAt: string;
     updatedAt: string;
+}
+
+export interface DriverMatchingPreferences {
+    pricePerKm: number;
+    minPricePerRide: number;
+    maxPickupRadiusKm: number;
+    vehicleType: number;
+    maxPassengers: number;
 }
 
 export interface FullDriver {
@@ -58,6 +69,12 @@ export interface FullDriver {
     username?: string;
     walletAddress?: string;
     isDriver?: boolean;
+    // Matching preferences
+    pricePerKm: number;
+    minPricePerRide: number;
+    maxPickupRadiusKm: number;
+    vehicleType: number;
+    maxPassengers: number;
 }
 
 export interface Driver {

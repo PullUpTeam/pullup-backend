@@ -15,12 +15,47 @@ function mapRowToRide(row: any): Ride {
         destinationAddress: row.destination_address,
         estimatedPrice: row.estimated_price,
         customPrice: row.custom_price,
+        distanceKm: row.distance_km,
+        passengerCount: row.passenger_count ?? 1,
+        requiredVehicleType: row.required_vehicle_type ?? 1,
         status: row.status,
         assignedDriverId: row.assigned_driver_id,
         driverAcceptedAt: row.driver_accepted_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
     };
+}
+
+// Haversine formula to calculate distance between two coordinates in km
+function calculateDistanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+    const R = 6371; // Earth's radius in km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+}
+
+// Calculate driver's minimum price for a ride based on their preferences
+function calculateDriverMinPrice(pricePerKm: number, minPricePerRide: number, distanceKm: number): number {
+    const distanceBasedPrice = pricePerKm * distanceKm;
+    return Math.max(distanceBasedPrice, minPricePerRide);
+}
+
+// Parse price string to number (handles "$10.50" or "10.50" formats)
+function parsePriceToNumber(price: string | undefined | null): number {
+    if (!price) return 0;
+    const cleaned = price.replace(/[^0-9.]/g, '');
+    return parseFloat(cleaned) || 0;
+}
+
+interface MatchingRide extends Ride {
+    distanceToPickup: number;
+    driverMinPrice: number;
+    ridePrice: number;
+    matchScore: number;
 }
 
 export const rideRoutes = new Elysia({ prefix: '/api/rides' })
@@ -498,6 +533,185 @@ export const rideRoutes = new Elysia({ prefix: '/api/rides' })
 
         } catch (error) {
             console.error('Error deleting ride:', error);
+            return {
+                error: 'Internal server error',
+                status: 500,
+            };
+        }
+    })
+
+    // ============================================================
+    // MATCHING ALGORITHM: Get rides matching driver's preferences
+    // ============================================================
+    //
+    // This endpoint returns only rides that match the driver's profile:
+    // 1. Within driver's max pickup radius
+    // 2. Ride price >= driver's minimum price (based on pricePerKm * distance or minPricePerRide)
+    // 3. Driver's vehicle type >= ride's required vehicle type
+    // 4. Driver's max passengers >= ride's passenger count
+    //
+    // Results are sorted by match score (best matches first)
+    // ============================================================
+    .get('/matching/:driverId', async ({ params, query, db }: {
+        params: { driverId: string };
+        query: { limit?: string; sortBy?: string };
+        db: Sql;
+    }) => {
+        try {
+            const { driverId } = params;
+            const limit = parseInt(query.limit || '20');
+            const sortBy = query.sortBy || 'score'; // 'score', 'distance', 'price'
+
+            // 1. Get driver with their preferences and current location
+            const drivers = await db`
+                SELECT
+                    id, latitude, longitude, status, availability,
+                    price_per_km, min_price_per_ride, max_pickup_radius_km,
+                    vehicle_type, max_passengers
+                FROM drivers
+                WHERE id = ${driverId}
+            `;
+
+            if (drivers.length === 0) {
+                return { error: 'Driver not found', status: 404 };
+            }
+
+            const driver = drivers[0]!;
+
+            // Verify driver is approved and available
+            if (driver.status !== 'approved') {
+                return { error: 'Driver must be approved to view matching rides', status: 403 };
+            }
+
+            if (driver.availability !== 'online_free') {
+                return { error: 'Driver must be online and free to view matching rides', status: 403 };
+            }
+
+            // Check if driver has location set
+            if (!driver.latitude || !driver.longitude) {
+                return { error: 'Driver location is required for matching', status: 400 };
+            }
+
+            const driverLat = driver.latitude;
+            const driverLng = driver.longitude;
+            const pricePerKm = driver.price_per_km ?? 1.5;
+            const minPricePerRide = driver.min_price_per_ride ?? 5.0;
+            const maxPickupRadius = driver.max_pickup_radius_km ?? 10.0;
+            const driverVehicleType = driver.vehicle_type ?? 1;
+            const driverMaxPassengers = driver.max_passengers ?? 4;
+
+            // 2. Get all pending rides
+            const pendingRides = await db`
+                SELECT * FROM rides
+                WHERE status = 'pending'
+                AND assigned_driver_id IS NULL
+                ORDER BY created_at DESC
+            `;
+
+            // 3. Filter and score rides based on driver preferences
+            const matchingRides: MatchingRide[] = [];
+
+            for (const row of pendingRides) {
+                const ride = mapRowToRide(row);
+
+                // Calculate distance from driver to pickup point
+                const distanceToPickup = calculateDistanceKm(
+                    driverLat, driverLng,
+                    ride.originCoordinates.latitude,
+                    ride.originCoordinates.longitude
+                );
+
+                // FILTER 1: Check if ride is within driver's max pickup radius
+                if (distanceToPickup > maxPickupRadius) {
+                    continue;
+                }
+
+                // FILTER 2: Check vehicle type requirement
+                const requiredVehicleType = ride.requiredVehicleType ?? 1;
+                if (driverVehicleType < requiredVehicleType) {
+                    continue;
+                }
+
+                // FILTER 3: Check passenger count
+                const passengerCount = ride.passengerCount ?? 1;
+                if (driverMaxPassengers < passengerCount) {
+                    continue;
+                }
+
+                // Calculate ride distance (origin to destination)
+                const rideDistanceKm = ride.distanceKm ?? calculateDistanceKm(
+                    ride.originCoordinates.latitude, ride.originCoordinates.longitude,
+                    ride.destinationCoordinates.latitude, ride.destinationCoordinates.longitude
+                );
+
+                // Calculate driver's minimum acceptable price for this ride
+                const driverMinPrice = calculateDriverMinPrice(pricePerKm, minPricePerRide, rideDistanceKm);
+
+                // Get ride's offered price (customPrice takes priority over estimatedPrice)
+                const ridePrice = parsePriceToNumber(ride.customPrice) || parsePriceToNumber(ride.estimatedPrice);
+
+                // FILTER 4: Check if ride price meets driver's minimum
+                if (ridePrice < driverMinPrice) {
+                    continue;
+                }
+
+                // Calculate match score (higher is better)
+                // Score factors:
+                // - Closer pickup = higher score (max 40 points)
+                // - Higher profit margin = higher score (max 40 points)
+                // - Newer rides = slight bonus (max 20 points)
+
+                const distanceScore = Math.max(0, 40 * (1 - distanceToPickup / maxPickupRadius));
+                const profitMargin = ridePrice > 0 ? (ridePrice - driverMinPrice) / ridePrice : 0;
+                const profitScore = Math.min(40, profitMargin * 100);
+
+                const rideAgeMinutes = (Date.now() - new Date(ride.createdAt).getTime()) / 60000;
+                const freshnessScore = Math.max(0, 20 * (1 - Math.min(rideAgeMinutes, 60) / 60));
+
+                const matchScore = distanceScore + profitScore + freshnessScore;
+
+                matchingRides.push({
+                    ...ride,
+                    distanceToPickup: Math.round(distanceToPickup * 100) / 100,
+                    driverMinPrice: Math.round(driverMinPrice * 100) / 100,
+                    ridePrice,
+                    matchScore: Math.round(matchScore * 10) / 10,
+                });
+            }
+
+            // 4. Sort based on preference
+            switch (sortBy) {
+                case 'distance':
+                    matchingRides.sort((a, b) => a.distanceToPickup - b.distanceToPickup);
+                    break;
+                case 'price':
+                    matchingRides.sort((a, b) => b.ridePrice - a.ridePrice);
+                    break;
+                case 'score':
+                default:
+                    matchingRides.sort((a, b) => b.matchScore - a.matchScore);
+            }
+
+            // 5. Apply limit
+            const limitedRides = matchingRides.slice(0, limit);
+
+            return {
+                success: true,
+                driverPreferences: {
+                    pricePerKm,
+                    minPricePerRide,
+                    maxPickupRadiusKm: maxPickupRadius,
+                    vehicleType: driverVehicleType,
+                    maxPassengers: driverMaxPassengers,
+                    currentLocation: { latitude: driverLat, longitude: driverLng }
+                },
+                matchingRides: limitedRides,
+                totalMatches: matchingRides.length,
+                totalPending: pendingRides.length,
+            };
+
+        } catch (error) {
+            console.error('Error finding matching rides:', error);
             return {
                 error: 'Internal server error',
                 status: 500,
